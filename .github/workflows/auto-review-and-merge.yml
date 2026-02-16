@@ -1,0 +1,252 @@
+name: Auto Review & Merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  review-and-merge:
+    runs-on: ubuntu-latest
+
+    # Only run on PRs with the openapi-update label
+    if: contains(github.event.pull_request.labels.*.name, 'openapi-update')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.REVIEWER_BOT_TOKEN }}
+
+      - name: Validate PR structure
+        id: validate
+        run: |
+          echo "🔍 Validating PR changes..."
+
+          # Check if only expected files are changed
+          CHANGED_FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files -q '.files[].path')
+
+          echo "📋 Changed files:"
+          echo "$CHANGED_FILES"
+
+          VALID=true
+          for file in $CHANGED_FILES; do
+            # Allow changes to openapi/, repos.json, and UPDATE_SUMMARY.txt
+            if [[ ! "$file" =~ ^openapi/ ]] && [[ "$file" != "repos.json" ]] && [[ "$file" != "UPDATE_SUMMARY.txt" ]]; then
+              echo "❌ Unexpected file change: $file"
+              VALID=false
+            fi
+          done
+
+          if [ "$VALID" = true ]; then
+            echo "✅ All file changes are valid"
+            echo "valid=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Invalid file changes detected"
+            echo "valid=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.REVIEWER_BOT_TOKEN }}
+
+      - name: Validate OpenAPI files
+        if: steps.validate.outputs.valid == 'true'
+        id: validate_openapi
+        run: |
+          echo "🔍 Validating OpenAPI specification structure..."
+
+          VALIDATION_PASSED=true
+          VALIDATION_ERRORS=""
+
+          # Find all openapi.json files in the changed files
+          OPENAPI_FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files -q '.files[].path' | grep 'openapi.json$' || true)
+
+          if [ -z "$OPENAPI_FILES" ]; then
+            echo "⚠️ No OpenAPI files found in this PR"
+            echo "openapi_valid=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Found OpenAPI files:"
+          echo "$OPENAPI_FILES"
+
+          while IFS= read -r file; do
+            if [ -z "$file" ]; then
+              continue
+            fi
+
+            echo ""
+            echo "📄 Checking: $file"
+
+            # Check if file exists
+            if [ ! -f "$file" ]; then
+              echo "❌ File not found: $file"
+              VALIDATION_PASSED=false
+              VALIDATION_ERRORS="${VALIDATION_ERRORS}\n- File not found: $file"
+              continue
+            fi
+
+            # Check if corresponding .metadata.json exists
+            DIR=$(dirname "$file")
+            METADATA_FILE="$DIR/.metadata.json"
+
+            echo "Looking for metadata at: $METADATA_FILE"
+
+            if [ ! -f "$METADATA_FILE" ]; then
+              echo "❌ Missing metadata file: $METADATA_FILE"
+              VALIDATION_PASSED=false
+              VALIDATION_ERRORS="${VALIDATION_ERRORS}\n- Missing metadata: $METADATA_FILE"
+            else
+              echo "✅ Metadata file exists: $METADATA_FILE"
+
+              # Validate metadata is valid JSON
+              if ! jq empty "$METADATA_FILE" 2>/dev/null; then
+                echo "❌ Invalid JSON in metadata file: $METADATA_FILE"
+                VALIDATION_PASSED=false
+                VALIDATION_ERRORS="${VALIDATION_ERRORS}\n- Invalid JSON in: $METADATA_FILE"
+              else
+                echo "✅ Metadata file is valid JSON"
+              fi
+            fi
+
+            # Validate JSON format and check for "openapi" field
+            if ! jq empty "$file" 2>/dev/null; then
+              echo "❌ Invalid JSON format in: $file"
+              VALIDATION_PASSED=false
+              VALIDATION_ERRORS="${VALIDATION_ERRORS}\n- Invalid JSON format in: $file"
+            else
+              echo "✅ Valid JSON format: $file"
+
+              # Check for "openapi" field in JSON
+              if ! jq -e '.openapi' "$file" >/dev/null 2>&1; then
+                echo "❌ Missing 'openapi' field in: $file"
+                VALIDATION_PASSED=false
+                VALIDATION_ERRORS="${VALIDATION_ERRORS}\n- Missing 'openapi' field in: $file"
+              else
+                OPENAPI_VERSION=$(jq -r '.openapi' "$file")
+                echo "✅ Valid OpenAPI spec (version: $OPENAPI_VERSION)"
+              fi
+
+              # Check for "info" field
+              if ! jq -e '.info' "$file" >/dev/null 2>&1; then
+                echo "⚠️ Warning: Missing 'info' field in: $file"
+              fi
+            fi
+
+          done <<< "$OPENAPI_FILES"
+
+          echo ""
+          if [ "$VALIDATION_PASSED" = true ]; then
+            echo "✅ All OpenAPI validations passed"
+            echo "openapi_valid=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ OpenAPI validation failed"
+            echo "Validation errors:$VALIDATION_ERRORS"
+            echo "openapi_valid=false" >> $GITHUB_OUTPUT
+            echo "validation_errors<<EOF" >> $GITHUB_OUTPUT
+            echo -e "$VALIDATION_ERRORS" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.REVIEWER_BOT_TOKEN }}
+
+      - name: Debug validation results
+        run: |
+          echo "File validation: ${{ steps.validate.outputs.valid }}"
+          echo "OpenAPI validation: ${{ steps.validate_openapi.outputs.openapi_valid }}"
+
+      - name: Approve PR
+        if: steps.validate.outputs.valid == 'true' && steps.validate_openapi.outputs.openapi_valid == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REVIEWER_BOT_TOKEN }}
+          script: |
+            console.log("Approving PR #" + context.payload.pull_request.number);
+
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              event: "APPROVE",
+              body: "✅ Auto-approved by Ballerina Bot\n\n**Validation Results:**\n- ✅ File structure verified\n- ✅ Only expected files modified\n- ✅ OpenAPI specifications validated\n- ✅ Ready to merge\n\n---\n🤖 Automated approval by Ballerina Bot"
+            });
+
+            console.log("✅ PR approved successfully by Ballerina Bot");
+
+      - name: Merge PR
+        if: steps.validate.outputs.valid == 'true' && steps.validate_openapi.outputs.openapi_valid == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REVIEWER_BOT_TOKEN }}
+          script: |
+            try {
+              console.log("Merging PR #" + context.payload.pull_request.number);
+
+              await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                merge_method: "squash",
+                commit_title: `${context.payload.pull_request.title} (#${context.payload.pull_request.number})`,
+                commit_message: "Automated merge of OpenAPI specification updates"
+              });
+
+              console.log("✅ PR merged successfully");
+
+              // Add success comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: "✅ **Auto-merge completed successfully**\n\nThe OpenAPI specifications have been merged to main. Connector regeneration will be triggered automatically.\n\n---\n🤖 Ballerina Bot"
+              });
+
+            } catch (error) {
+              console.error("❌ Failed to merge PR:", error);
+
+              // Comment on PR about merge failure
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: "⚠️ **Auto-merge failed**\n\nPlease review and merge manually.\n\n**Error:** " + error.message + "\n\n---\n🤖 Ballerina Bot"
+              });
+
+              throw error;
+            }
+
+      - name: Comment on validation failure
+        if: steps.validate.outputs.valid == 'false' || steps.validate_openapi.outputs.openapi_valid == 'false'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REVIEWER_BOT_TOKEN }}
+          script: |
+            const fileValidation = '${{ steps.validate.outputs.valid }}' === 'true' ? '✅' : '❌';
+            const openapiValidation = '${{ steps.validate_openapi.outputs.openapi_valid }}' === 'true' ? '✅' : '❌';
+
+            let errorDetails = '';
+            const validationErrors = `${{ steps.validate_openapi.outputs.validation_errors }}`;
+            if (validationErrors) {
+              errorDetails = '\n\n**Error Details:**\n' + validationErrors;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: `⚠️ **Auto-merge skipped: Validation failed**
+
+              **Validation Results:**
+              ${fileValidation} File structure validation
+              ${openapiValidation} OpenAPI specification validation${errorDetails}
+
+              Please review the changes manually before merging.
+
+              ---
+              🤖 Ballerina Bot`
+            });
