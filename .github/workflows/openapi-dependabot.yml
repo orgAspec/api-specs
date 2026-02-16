@@ -210,7 +210,7 @@ jobs:
                 echo "📌 Actual version directory: $VERSION_DIR"
 
                 # Use main branch since PR is merged
-                SPEC_URL="https://raw.githubusercontent.com/orgSpec/api-specs/main/openapi/${VENDOR}/${API}/${VERSION_DIR}/openapi.json"
+                SPEC_URL="https://raw.githubusercontent.com/orgAspec/api-specs/main/openapi/${VENDOR}/${API}/${VERSION_DIR}/openapi.json"
                 echo "📎 Spec URL: $SPEC_URL"
 
                 echo "🚀 Sending repository_dispatch to $CONNECTOR_REPO..."
@@ -218,7 +218,7 @@ jobs:
                   repos/"$CONNECTOR_REPO"/dispatches \
                   -X POST \
                   -f event_type=openapi-update \
-                  -f client_payload[sender]=orgSpec/api-specs \
+                  -f client_payload[sender]=orgAspec/api-specs \
                   -f client_payload[openapi_url]="$SPEC_URL" \
                   -f client_payload[spec_version]="$VERSION_DIR"
 

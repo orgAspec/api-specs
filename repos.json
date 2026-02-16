@@ -2,7 +2,7 @@
     {
          "vendor": "hubspot",
         "api": "crm.associations",
-        "connectorRepo": "orgBalLib/module-ballerinax-hubspot.crm.associations",
+        "connectorRepo": "orgABalLib/module-ballerinax-hubspot.crm.associations",
         "owner": "HubSpot",
         "repo": "HubSpot-public-api-spec-collection",
         "name": "HubSpot CRM Associations API",
