@@ -2,7 +2,7 @@ name: Auto Review & Merge
 
 on:
   pull_request:
-    types: [opened, synchronize, labeled]
+    types: [opened]  # Only trigger on PR creation, not on label or synchronize
 
 permissions:
   contents: write
