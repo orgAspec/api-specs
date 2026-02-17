@@ -31,7 +31,29 @@ jobs:
         run: |
           cd dependabot
           bal clean
-          bal run
+
+          # Retry logic for transient Ballerina Central failures
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            echo "🔄 Attempt $((RETRY_COUNT + 1)) of $MAX_RETRIES..."
+            if bal run; then
+              echo "✅ Build succeeded!"
+              break
+            fi
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+              echo "⚠️ Build failed, retrying in 30 seconds..."
+              sleep 30
+              # Clear cache before retry
+              rm -rf ~/.ballerina/repositories/central.ballerina.io/cache 2>/dev/null || true
+            else
+              echo "❌ Build failed after $MAX_RETRIES attempts"
+              exit 1
+            fi
+          done
+
           cd ..
 
       - name: Check for updates
