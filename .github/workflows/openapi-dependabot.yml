@@ -30,6 +30,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           cd dependabot
+          bal clean
           bal run
           cd ..
 
