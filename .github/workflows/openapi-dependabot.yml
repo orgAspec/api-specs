@@ -11,6 +11,8 @@ on:
 jobs:
   update-openapi-specs:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
     steps:
       - name: Checkout api-specs repo
@@ -29,8 +31,6 @@ jobs:
           git config --global user.name "ballerina-bot"
 
       - name: Run Dependabot Monitor
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           cd dependabot
           bal clean
@@ -88,8 +88,6 @@ jobs:
 
       - name: Create Pull Request
         if: env.UPDATES_FOUND == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           UPDATE_SUMMARY=$(cat UPDATE_SUMMARY.txt)
           PR_TITLE="[Dependabot] chore: Update OpenAPI Specifications - $(date +%Y-%m-%d)"
@@ -135,8 +133,6 @@ jobs:
 
       - name: Wait for Auto-Merge
         if: env.UPDATES_FOUND == 'true' && env.PR_NUMBER != ''
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           echo "Waiting for auto-review and merge workflow..."
           MAX_WAIT=300  # 5 minutes maximum wait time
@@ -245,8 +241,6 @@ jobs:
 
       - name: Notify on failure
         if: failure() && env.UPDATES_FOUND == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           if [ -n "$PR_NUMBER" ]; then
             gh pr comment "$PR_NUMBER" --body "Connector regeneration workflow failed. Please check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
