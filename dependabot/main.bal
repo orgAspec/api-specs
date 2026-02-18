@@ -99,16 +99,17 @@ function extractRolloutNumber(string path) returns string|error {
 
 // List directory contents from GitHub
 function listGitHubDirectory(string owner, string repo, string branch, string path, string token) returns string[]|error {
-    string url = string `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}`;
+    string baseUrl = "https://api.github.com";
+    string apiPath = string `/repos/${owner}/${repo}/contents/${path}?ref=${branch}`;
 
-    http:Client httpClient = check new (url);
+    http:Client httpClient = check new (baseUrl);
     map<string> headers = {
         "Authorization": string `Bearer ${token}`,
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28"
     };
 
-    http:Response response = check httpClient->get("", headers);
+    http:Response response = check httpClient->get(apiPath, headers);
 
     if response.statusCode != 200 {
         return error(string `Failed to list directory: HTTP ${response.statusCode}`);
@@ -226,8 +227,13 @@ function downloadFromGitHubReleaseAsset(github:Client githubClient, string owner
             continue;
         }
         print(string `Found in release assets`, "Info", 1);
-        http:Client httpClient = check new (asset.browser_download_url);
-        http:Response response = check httpClient->/;
+
+        // Parse the browser_download_url to extract base URL and path
+        string downloadUrl = asset.browser_download_url;
+        // GitHub release asset URLs are like: https://github.com/owner/repo/releases/download/tag/file
+        // We need to use the full URL as base and get root path
+        http:Client httpClient = check new (downloadUrl);
+        http:Response response = check httpClient->get("");
         if response.statusCode != 200 {
             return error(string `Failed to download asset: HTTP ${response.statusCode}`);
         }
@@ -241,14 +247,15 @@ function downloadFromGitHubReleaseAsset(github:Client githubClient, string owner
 function downloadFromGitHubRawLink(string owner, string repo,
         string tagName, string specPath) returns string|error {
 
-    string downloadUrl = string `https://raw.githubusercontent.com/${owner}/${repo}/${tagName}/${specPath}`;
-    print(string `Downloading from raw GitHub URL: ${downloadUrl}`, "Info", 1);
+    string baseUrl = "https://raw.githubusercontent.com";
+    string path = string `/${owner}/${repo}/${tagName}/${specPath}`;
+    print(string `Downloading from raw GitHub URL: ${baseUrl}${path}`, "Info", 1);
 
-    http:Client httpClient = check new (downloadUrl);
-    http:Response response = check httpClient->/;
+    http:Client httpClient = check new (baseUrl);
+    http:Response response = check httpClient->get(path);
 
     if response.statusCode != 200 {
-        return error(string `Failed to download: HTTP ${response.statusCode} from ${downloadUrl}`);
+        return error(string `Failed to download: HTTP ${response.statusCode} from ${baseUrl}${path}`);
     }
 
     return check getTextFromResponse(response);
@@ -285,14 +292,15 @@ function downloadSpec(github:Client githubClient, string owner, string repo,
 function downloadSpecFromBranch(string owner, string repo, string branch, string specPath) returns string|error {
     print(string `Downloading ${specPath} from ${branch} branch...`, "Info", 1);
 
-    string downloadUrl = string `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${specPath}`;
+    string baseUrl = string `https://raw.githubusercontent.com`;
+    string path = string `/${owner}/${repo}/${branch}/${specPath}`;
 
     // Download the file
-    http:Client httpClient = check new (downloadUrl);
-    http:Response response = check httpClient->/;
+    http:Client httpClient = check new (baseUrl);
+    http:Response response = check httpClient->get(path);
 
     if response.statusCode != 200 {
-        return error(string `Failed to download: HTTP ${response.statusCode} from ${downloadUrl}`);
+        return error(string `Failed to download: HTTP ${response.statusCode} from ${baseUrl}${path}`);
     }
 
     // Get content
