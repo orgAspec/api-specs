@@ -23,6 +23,11 @@ import ballerina/lang.regexp;
 import ballerina/os;
 import ballerina/time;
 
+// Logging utility function for structured output
+isolated function print(string message, string level, int indentation) {
+    string spaces = string:'join("", from int i in 0 ..< indentation select "\t");
+    io:println(string `${spaces}[${level}] ${message}`);
+}
 
 // Versioning strategy types
 const RELEASE_TAG = "release-tag";
@@ -132,7 +137,7 @@ function listGitHubDirectory(string owner, string repo, string branch, string pa
 
 // Find latest rollout number in a directory
 function findLatestRollout(string owner, string repo, string branch, string basePath, string token) returns string|error {
-    io:println(string `  Searching for rollouts in ${basePath}...`);
+    print(string `Searching for rollouts in ${basePath}...`, "Info", 1);
 
     string[] contents = check listGitHubDirectory(owner, repo, branch, basePath, token);
 
@@ -149,7 +154,7 @@ function findLatestRollout(string owner, string repo, string branch, string base
         return error("No rollout directories found");
     }
 
-    io:println(string `  Found latest rollout: ${maxRollout}`);
+    print(string `Found latest rollout: ${maxRollout}`, "Info", 1);
     return maxRollout.toString();
 }
 
@@ -203,92 +208,98 @@ function extractApiVersion(string content) returns string|error {
     return error("Could not extract API version from spec");
 }
 
-// Download OpenAPI spec from release asset or repo
-function downloadSpec(github:Client githubClient, string owner, string repo,
-        string assetName, string tagName, string specPath) returns string|error {
+// Download OpenAPI spec from release asset
+function downloadFromGitHubReleaseAsset(github:Client githubClient, string owner, string repo,
+        string assetName, string tagName) returns string|error {
 
-    io:println(string `  Downloading ${assetName}...`);
+    print(string `Searching release assets for ${assetName}...`, "Info", 1);
 
-    string? downloadUrl = ();
-
-    // Try to get from release assets first
     github:Release release = check githubClient->/repos/[owner]/[repo]/releases/tags/[tagName]();
-
     github:ReleaseAsset[]? assets = release.assets;
-    if assets is github:ReleaseAsset[] {
-        foreach github:ReleaseAsset asset in assets {
-            if asset.name == assetName {
-                downloadUrl = asset.browser_download_url;
-                io:println(string `  Found in release assets`);
-                break;
-            }
+
+    if assets is () {
+        return error("No assets found in release");
+    }
+
+    foreach github:ReleaseAsset asset in assets {
+        if asset.name != assetName {
+            continue;
         }
+        print(string `Found in release assets`, "Info", 1);
+        http:Client httpClient = check new (asset.browser_download_url);
+        http:Response response = check httpClient->/;
+        if response.statusCode != 200 {
+            return error(string `Failed to download asset: HTTP ${response.statusCode}`);
+        }
+        return check getTextFromResponse(response);
     }
 
-    // If not found in assets, try direct download from repo
-    if downloadUrl is () {
-        io:println(string `  Not in release assets, downloading from repository...`);
-        downloadUrl = string `https://raw.githubusercontent.com/${owner}/${repo}/${tagName}/${specPath}`;
-    }
+    return error(string `Asset '${assetName}' not found in release`);
+}
 
-    // Download the file
-    http:Client httpClient = check new (<string>downloadUrl);
-    http:Response response = check httpClient->get("");
+// Download OpenAPI spec from raw GitHub URL (fallback)
+function downloadFromGitHubRawLink(string owner, string repo,
+        string tagName, string specPath) returns string|error {
+
+    string downloadUrl = string `https://raw.githubusercontent.com/${owner}/${repo}/${tagName}/${specPath}`;
+    print(string `Downloading from raw GitHub URL: ${downloadUrl}`, "Info", 1);
+
+    http:Client httpClient = check new (downloadUrl);
+    http:Response response = check httpClient->/;
 
     if response.statusCode != 200 {
-        return error(string `Failed to download: HTTP ${response.statusCode} from ${<string>downloadUrl}`);
+        return error(string `Failed to download: HTTP ${response.statusCode} from ${downloadUrl}`);
     }
 
-    // Get content
-    string|byte[]|error content = response.getTextPayload();
+    return check getTextFromResponse(response);
+}
 
+// Helper: extract text content from HTTP response
+isolated function getTextFromResponse(http:Response response) returns string|error {
+    string|byte[]|error content = response.getTextPayload();
     if content is error {
         return error("Failed to get content from response");
     }
-
-    string textContent;
     if content is string {
-        textContent = content;
-    } else {
-        // Convert bytes to string
-        textContent = check string:fromBytes(content);
+        return content;
+    }
+    return check string:fromBytes(content);
+}
+
+// Download OpenAPI spec — tries release assets first, falls back to raw link
+function downloadSpec(github:Client githubClient, string owner, string repo,
+        string assetName, string tagName, string specPath) returns string|error {
+
+    print(string `Downloading ${assetName}...`, "Info", 1);
+
+    string|error assetContent = downloadFromGitHubReleaseAsset(githubClient, owner, repo, assetName, tagName);
+    if assetContent is string {
+        return assetContent;
     }
 
-    io:println(string `  Downloaded spec`);
-    return textContent;
+    print(string `Not in release assets, falling back to raw link...`, "Info", 1);
+    return downloadFromGitHubRawLink(owner, repo, tagName, specPath);
 }
 
 // Download spec directly from branch (for file-based versioning)
 function downloadSpecFromBranch(string owner, string repo, string branch, string specPath) returns string|error {
-    io:println(string `  Downloading ${specPath} from ${branch} branch...`);
+    print(string `Downloading ${specPath} from ${branch} branch...`, "Info", 1);
 
     string downloadUrl = string `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${specPath}`;
 
     // Download the file
     http:Client httpClient = check new (downloadUrl);
-    http:Response response = check httpClient->get("");
+    http:Response response = check httpClient->/;
 
     if response.statusCode != 200 {
         return error(string `Failed to download: HTTP ${response.statusCode} from ${downloadUrl}`);
     }
 
     // Get content
-    string|byte[]|error content = response.getTextPayload();
+    string|byte[] content = check response.getTextPayload();
 
-    if content is error {
-        return error("Failed to get content from response");
-    }
 
-    string textContent;
-    if content is string {
-        textContent = content;
-    } else {
-        // Convert bytes to string
-        textContent = check string:fromBytes(content);
-    }
-
-    io:println(string `  Downloaded spec`);
-    return textContent;
+    return content is string ? content : string:fromBytes(content);
 }
 
 // Save spec to file
@@ -301,7 +312,7 @@ function saveSpec(string content, string localPath) returns error? {
 
     // Write as openapi.json (JSON format)
     check io:fileWriteString(localPath, content);
-    io:println(string `  Saved to ${localPath}`);
+    print(string `Saved to ${localPath}`, "Info", 1);
     return;
 }
 
@@ -317,7 +328,7 @@ function createMetadataFile(Repository repo, string version, string dirPath) ret
 
     string metadataPath = string `${dirPath}/.metadata.json`;
     check io:fileWriteJson(metadataPath, metadata);
-    io:println(string `  Created metadata at ${metadataPath}`);
+    print(string `Created metadata at ${metadataPath}`, "Info", 1);
     return;
 }
 
@@ -338,7 +349,7 @@ function createPullRequest(github:Client githubClient, string owner, string repo
         string branchName, string baseBranch, string title,
         string body) returns string|error {
 
-    io:println("\nCreating Pull Request...");
+    print("Creating Pull Request...", "Info", 0);
 
     github:PullRequest pr = check githubClient->/repos/[owner]/[repo]/pulls.post({
         title: title,
@@ -348,149 +359,160 @@ function createPullRequest(github:Client githubClient, string owner, string repo
     });
 
     string prUrl = pr.html_url;
-    io:println(string `Pull Request created successfully!`);
-    io:println(string `PR URL: ${prUrl}`);
+    print("Pull Request created successfully!", "Info", 0);
+    print(string `PR URL: ${prUrl}`, "Info", 0);
 
     // Add labels to the PR
     int prNumber = pr.number;
     _ = check githubClient->/repos/[owner]/[repo]/issues/[prNumber]/labels.post({
         labels: ["openapi-update", "automated", "dependencies"]
     });
-    io:println("Added labels to PR");
+    print("Added labels to PR", "Info", 0);
 
     return prUrl;
 }
 
 // Remove quotes from string
 function removeQuotes(string s) returns string {
-    string result = "";
-    foreach int i in 0 ..< s.length() {
-        string c = s.substring(i, i + 1);
-        if c != "\"" && c != "'" {
-            result += c;
-        }
+    return re `"|'`.replace(s, "");
+}
+
+// Helper: Extract API version from spec or fallback to tag name
+function getApiVersion(string specContent, string tagName) returns string {
+    string|error apiVersionResult = extractApiVersion(specContent);
+    if apiVersionResult is error {
+        print("Could not extract API version, using tag: " + tagName, "Warn", 1);
+        return tagName.startsWith("v") ? tagName.substring(1) : tagName;
     }
-    return result;
+    print("API Version: " + apiVersionResult, "Info", 1);
+    return apiVersionResult;
+}
+
+// Helper: Save spec and create metadata, returns error if save fails
+function saveSpecAndMetadata(string specContent, string localPath, Repository repo, string apiVersion, string versionDir) returns error? {
+    error? saveResult = saveSpec(specContent, localPath);
+    if saveResult is error {
+        print("Save failed: " + saveResult.message(), "Error", 1);
+        return saveResult;
+    }
+
+    error? metadataResult = createMetadataFile(repo, apiVersion, versionDir);
+    if metadataResult is error {
+        print("Metadata creation failed: " + metadataResult.message(), "Error", 1);
+    }
+    return;
+}
+
+// Helper: Build update result record
+function buildUpdateResult(Repository repo, string oldVersion, string newVersion, string apiVersion,
+        string downloadUrl, string localPath, boolean contentChanged, string updateType) returns UpdateResult {
+    return {
+        repo: repo,
+        oldVersion: oldVersion,
+        newVersion: newVersion,
+        apiVersion: apiVersion,
+        downloadUrl: downloadUrl,
+        localPath: localPath,
+        contentChanged: contentChanged,
+        updateType: updateType
+    };
+}
+
+// Helper: Handle release fetch error and return appropriate error
+function handleReleaseFetchError(error err, string owner, string repo) returns error {
+    string errorMsg = err.message();
+    if errorMsg.includes("404") {
+        print(string `No releases found for ${owner}/${repo}`, "Error", 1);
+    } else if errorMsg.includes("401") || errorMsg.includes("403") {
+        print("Authentication failed", "Error", 1);
+    } else {
+        print(string `Error: ${errorMsg}`, "Error", 1);
+    }
+    return err;
+}
+
+// Helper: Process a valid release and check for updates
+function processRelease(github:Client githubClient, Repository repo, github:Release release) returns UpdateResult|error? {
+    string tagName = release.tag_name;
+    string? publishedAt = release.published_at;
+
+    // Skip drafts and pre-releases
+    if release.prerelease || release.draft {
+        print(string `Skipping pre-release: ${tagName}`, "Info", 1);
+        return ();
+    }
+
+    print(string `Latest release tag: ${tagName}`, "Info", 1);
+    if publishedAt is string {
+        print(string `Published: ${publishedAt}`, "Info", 1);
+    }
+
+    // Download the spec
+    string|error specContent = downloadSpec(githubClient, repo.owner, repo.repo, repo.releaseAssetName, tagName, repo.specPath);
+    if specContent is error {
+        print("Download failed: " + specContent.message(), "Error", 1);
+        return error(specContent.message());
+    }
+
+    // Check for changes
+    boolean versionChanged = hasVersionChanged(repo.lastVersion, tagName);
+    string contentHash = calculateHash(specContent);
+    boolean contentChanged = hasContentChanged(repo.lastContentHash, contentHash);
+
+    print(string `Content Hash: ${contentHash.substring(0, 16)}...`, "Info", 1);
+
+    // No updates needed
+    if !versionChanged && !contentChanged {
+        print(string `No updates (version: ${repo.lastVersion}, content unchanged)`, "Info", 1);
+        return ();
+    }
+
+    // Process the update
+    string updateType = versionChanged && contentChanged ? "both" : (versionChanged ? "version" : "content");
+    print(string `UPDATE DETECTED! (Type: ${updateType})`, "Info", 1);
+
+    string apiVersion = getApiVersion(specContent, tagName);
+    string versionDir = "../openapi/" + repo.vendor + "/" + repo.api + "/" + apiVersion;
+    string localPath = versionDir + "/openapi.json";
+
+    // Save spec and metadata
+    error? saveError = saveSpecAndMetadata(specContent, localPath, repo, apiVersion, versionDir);
+    if saveError is error {
+        return saveError;
+    }
+
+    // Update repo record
+    string oldVersion = repo.lastVersion;
+    repo.lastVersion = tagName;
+    repo.lastContentHash = contentHash;
+
+    return buildUpdateResult(
+        repo, oldVersion, tagName, apiVersion,
+        "https://github.com/" + repo.owner + "/" + repo.repo + "/releases/tag/" + tagName,
+        localPath, contentChanged, updateType
+    );
 }
 
 // Process repository with release-tag versioning strategy
 function processReleaseTagRepo(github:Client githubClient, Repository repo) returns UpdateResult|error? {
-    io:println(string `Checking: ${repo.name} (${repo.vendor}/${repo.api}) [Release-Tag Strategy]`);
+    print(string `Checking: ${repo.name} (${repo.vendor}/${repo.api}) [Release-Tag Strategy]`, "Info", 0);
 
-    // Get latest release
     github:Release|error latestRelease = githubClient->/repos/[repo.owner]/[repo.repo]/releases/latest();
 
-    if latestRelease is github:Release {
-        string tagName = latestRelease.tag_name;
-        string? publishedAt = latestRelease.published_at;
-        boolean isDraft = latestRelease.draft;
-        boolean isPrerelease = latestRelease.prerelease;
-
-        if isPrerelease || isDraft {
-            io:println(string `  Skipping pre-release: ${tagName}`);
-            return ();
-        }
-
-        io:println(string `  Latest release tag: ${tagName}`);
-        if publishedAt is string {
-            io:println(string `  Published: ${publishedAt}`);
-        }
-
-        boolean versionChanged = hasVersionChanged(repo.lastVersion, tagName);
-
-        // Download the spec to check content
-        string|error specContent = downloadSpec(
-                githubClient,
-                repo.owner,
-                repo.repo,
-                repo.releaseAssetName,
-                tagName,
-                repo.specPath
-        );
-
-        if specContent is error {
-            io:println("  Download failed: " + specContent.message());
-            return error(specContent.message());
-        }
-
-        // Calculate content hash
-        string contentHash = calculateHash(specContent);
-        boolean contentChanged = hasContentChanged(repo.lastContentHash, contentHash);
-
-        io:println(string `  Content Hash: ${contentHash.substring(0, 16)}...`);
-
-        if versionChanged || contentChanged {
-            string updateType = versionChanged && contentChanged ? "both" : (versionChanged ? "version" : "content");
-            io:println(string `  UPDATE DETECTED! (Type: ${updateType})`);
-
-            // Extract API version from spec
-            string apiVersion = "";
-            var apiVersionResult = extractApiVersion(specContent);
-            if apiVersionResult is error {
-                io:println("  Could not extract API version, using tag: " + tagName);
-                apiVersion = tagName.startsWith("v") ? tagName.substring(1) : tagName;
-            } else {
-                apiVersion = apiVersionResult;
-                io:println("  API Version: " + apiVersion);
-            }
-
-            // Structure: openapi/{vendor}/{api}/{apiVersion}/
-            string versionDir = "../openapi/" + repo.vendor + "/" + repo.api + "/" + apiVersion;
-            string localPath = versionDir + "/openapi.json";
-
-            // Save the spec
-            error? saveResult = saveSpec(specContent, localPath);
-            if saveResult is error {
-                io:println("  Save failed: " + saveResult.message());
-                return error(saveResult.message());
-            }
-
-            // Create metadata.json
-            error? metadataResult = createMetadataFile(repo, apiVersion, versionDir);
-            if metadataResult is error {
-                io:println("  Metadata creation failed: " + metadataResult.message());
-            }
-
-            // Update the repo record
-            string oldVersion = repo.lastVersion;
-            repo.lastVersion = tagName;
-            repo.lastContentHash = contentHash;
-
-            // Return the update result
-            return {
-                repo: repo,
-                oldVersion: oldVersion,
-                newVersion: tagName,
-                apiVersion: apiVersion,
-                downloadUrl: "https://github.com/" + repo.owner + "/" + repo.repo + "/releases/tag/" + tagName,
-                localPath: localPath,
-                contentChanged: contentChanged,
-                updateType: updateType
-            };
-        } else {
-            io:println(string `  No updates (version: ${repo.lastVersion}, content unchanged)`);
-            return ();
-        }
-    } else {
-        string errorMsg = latestRelease.message();
-        if errorMsg.includes("404") {
-            io:println(string `  Error: No releases found for ${repo.owner}/${repo.repo}`);
-        } else if errorMsg.includes("401") || errorMsg.includes("403") {
-            io:println(string `  Error: Authentication failed`);
-        } else {
-            io:println(string `  Error: ${errorMsg}`);
-        }
-        return error(errorMsg);
+    if latestRelease is error {
+        return handleReleaseFetchError(latestRelease, repo.owner, repo.repo);
     }
+
+    return processRelease(githubClient, repo, latestRelease);
 }
 
 // Process repository with file-based versioning strategy
 function processFileBasedRepo(Repository repo) returns UpdateResult|error? {
-    io:println(string `Checking: ${repo.name} (${repo.vendor}/${repo.api}) [File-Based Strategy]`);
+    print(string `Checking: ${repo.name} (${repo.vendor}/${repo.api}) [File-Based Strategy]`, "Info", 0);
 
     string branch = repo.branch is string ? <string>repo.branch : "master";
-    io:println(string `  Branch: ${branch}`);
-    io:println(string `  Current tracked version: ${repo.lastVersion}`);
+    print(string `Branch: ${branch}`, "Info", 1);
+    print(string `Current tracked version: ${repo.lastVersion}`, "Info", 1);
 
     // Download the spec from branch
     string|error specContent = downloadSpecFromBranch(
@@ -501,7 +523,7 @@ function processFileBasedRepo(Repository repo) returns UpdateResult|error? {
     );
 
     if specContent is error {
-        io:println("  Download failed: " + specContent.message());
+        print("Download failed: " + specContent.message(), "Error", 1);
         return error(specContent.message());
     }
 
@@ -509,26 +531,26 @@ function processFileBasedRepo(Repository repo) returns UpdateResult|error? {
     string contentHash = calculateHash(specContent);
     boolean contentChanged = hasContentChanged(repo.lastContentHash, contentHash);
 
-    io:println(string `  Content Hash: ${contentHash.substring(0, 16)}...`);
+    print(string `Content Hash: ${contentHash.substring(0, 16)}...`, "Info", 1);
 
     // Extract API version from spec content
     string|error apiVersionResult = extractApiVersion(specContent);
 
     if apiVersionResult is error {
-        io:println("  Could not extract API version from spec content");
-        io:println("  Skipping this repository - please check the spec format");
+        print("Could not extract API version from spec content", "Error", 1);
+        print("Skipping this repository - please check the spec format", "Warn", 1);
         return error("Cannot extract version from spec");
     }
 
     string apiVersion = apiVersionResult;
-    io:println(string `  Current API Version in spec: ${apiVersion}`);
+    print(string `Current API Version in spec: ${apiVersion}`, "Info", 1);
 
     boolean versionChanged = hasVersionChanged(repo.lastVersion, apiVersion);
 
     // Check if version has changed OR content has changed
     if versionChanged || contentChanged {
         string updateType = versionChanged && contentChanged ? "both" : (versionChanged ? "version" : "content");
-        io:println(string `  UPDATE DETECTED! (${repo.lastVersion} -> ${apiVersion}, Type: ${updateType})`);
+        print(string `UPDATE DETECTED! (${repo.lastVersion} -> ${apiVersion}, Type: ${updateType})`, "Info", 1);
 
         // Structure: openapi/{vendor}/{api}/{apiVersion}/
         string versionDir = "../openapi/" + repo.vendor + "/" + repo.api + "/" + apiVersion;
@@ -536,20 +558,20 @@ function processFileBasedRepo(Repository repo) returns UpdateResult|error? {
 
         // For content-only changes in same version, REPLACE existing files
         if !versionChanged && contentChanged {
-            io:println(string `  Content update in same version ${apiVersion} - replacing existing files`);
+            print(string `Content update in same version ${apiVersion} - replacing existing files`, "Info", 1);
         }
 
         // Save the spec (will overwrite if exists)
         error? saveResult = saveSpec(specContent, localPath);
         if saveResult is error {
-            io:println("  Save failed: " + saveResult.message());
+            print("Save failed: " + saveResult.message(), "Error", 1);
             return error(saveResult.message());
         }
 
         // Create/update metadata.json
         error? metadataResult = createMetadataFile(repo, apiVersion, versionDir);
         if metadataResult is error {
-            io:println("  Metadata creation failed: " + metadataResult.message());
+            print("Metadata creation failed: " + metadataResult.message(), "Error", 1);
         }
 
         // Update the repo record
@@ -569,23 +591,23 @@ function processFileBasedRepo(Repository repo) returns UpdateResult|error? {
             updateType: updateType
         };
     } else {
-        io:println(string `  No updates (version: ${apiVersion}, content unchanged)`);
+        print(string `No updates (version: ${apiVersion}, content unchanged)`, "Info", 1);
         return ();
     }
 }
 
 // Process repository with rollout-based versioning strategy (for HubSpot)
 function processRolloutBasedRepo(github:Client githubClient, Repository repo, string token) returns UpdateResult|error? {
-    io:println(string `Checking: ${repo.name} (${repo.vendor}/${repo.api}) [Rollout-Based Strategy]`);
+    print(string `Checking: ${repo.name} (${repo.vendor}/${repo.api}) [Rollout-Based Strategy]`, "Info", 0);
 
     string branch = repo.branch is string ? <string>repo.branch : "main";
-    io:println(string `  Branch: ${branch}`);
-    io:println(string `  Current tracked rollout: ${repo.lastVersion}`);
+    print(string `Branch: ${branch}`, "Info", 1);
+    print(string `Current tracked rollout: ${repo.lastVersion}`, "Info", 1);
 
     // Extract the base path to the Rollouts directory
     string[] pathParts = regexp:split(re `/Rollouts/`, repo.specPath);
     if pathParts.length() < 2 {
-        io:println("  Invalid path format - cannot find Rollouts directory");
+        print("Invalid path format - cannot find Rollouts directory", "Error", 1);
         return error("Invalid rollout path format");
     }
 
@@ -595,11 +617,11 @@ function processRolloutBasedRepo(github:Client githubClient, Repository repo, st
     string|error latestRollout = findLatestRollout(repo.owner, repo.repo, branch, basePath, token);
 
     if latestRollout is error {
-        io:println("  Failed to find rollouts: " + latestRollout.message());
+        print("Failed to find rollouts: " + latestRollout.message(), "Error", 1);
         return error(latestRollout.message());
     }
 
-    io:println(string `  Latest rollout: ${latestRollout}`);
+    print(string `Latest rollout: ${latestRollout}`, "Info", 1);
 
     boolean rolloutChanged = hasVersionChanged(repo.lastVersion, latestRollout);
 
@@ -619,7 +641,7 @@ function processRolloutBasedRepo(github:Client githubClient, Repository repo, st
     );
 
     if specContent is error {
-        io:println("  Download failed: " + specContent.message());
+        print("Download failed: " + specContent.message(), "Error", 1);
         return error(specContent.message());
     }
 
@@ -627,22 +649,22 @@ function processRolloutBasedRepo(github:Client githubClient, Repository repo, st
     string contentHash = calculateHash(specContent);
     boolean contentChanged = hasContentChanged(repo.lastContentHash, contentHash);
 
-    io:println(string `  Content Hash: ${contentHash.substring(0, 16)}...`);
+    print(string `Content Hash: ${contentHash.substring(0, 16)}...`, "Info", 1);
 
     // Check if rollout has changed OR content has changed
     if rolloutChanged || contentChanged {
         string updateType = rolloutChanged && contentChanged ? "both" : (rolloutChanged ? "rollout" : "content");
-        io:println(string `  UPDATE DETECTED! (Rollout ${repo.lastVersion} -> ${latestRollout}, Type: ${updateType})`);
+        print(string `UPDATE DETECTED! (Rollout ${repo.lastVersion} -> ${latestRollout}, Type: ${updateType})`, "Info", 1);
 
         // Extract API version from spec
         string apiVersion = "";
         var apiVersionResult = extractApiVersion(specContent);
         if apiVersionResult is error {
-            io:println("  Could not extract API version from spec, using rollout number");
+            print("Could not extract API version from spec, using rollout number", "Warn", 1);
             apiVersion = latestRollout;
         } else {
             apiVersion = apiVersionResult;
-            io:println(string `  API Version: ${apiVersion}`);
+            print(string `API Version: ${apiVersion}`, "Info", 1);
         }
 
         // Structure: openapi/{vendor}/{api}/rollout-{rolloutNumber}/
@@ -651,20 +673,20 @@ function processRolloutBasedRepo(github:Client githubClient, Repository repo, st
 
         // For content-only changes in same rollout, REPLACE existing files
         if !rolloutChanged && contentChanged {
-            io:println(string `  Content update within rollout ${latestRollout} - replacing existing files`);
+            print(string `Content update within rollout ${latestRollout} - replacing existing files`, "Info", 1);
         }
 
         // Save the spec (will overwrite if exists for content-only updates)
         error? saveResult = saveSpec(specContent, localPath);
         if saveResult is error {
-            io:println("  Save failed: " + saveResult.message());
+            print("Save failed: " + saveResult.message(), "Error", 1);
             return error(saveResult.message());
         }
 
         // Create/update metadata.json
         error? metadataResult = createMetadataFile(repo, latestRollout, versionDir);
         if metadataResult is error {
-            io:println("  Metadata creation failed: " + metadataResult.message());
+            print("Metadata creation failed: " + metadataResult.message(), "Error", 1);
         }
 
         // Update the repo record with new rollout and path
@@ -685,38 +707,41 @@ function processRolloutBasedRepo(github:Client githubClient, Repository repo, st
             updateType: updateType
         };
     } else {
-        io:println(string `  No updates (rollout: ${latestRollout}, content unchanged)`);
+        print(string `No updates (rollout: ${latestRollout}, content unchanged)`, "Info", 1);
         return ();
     }
 }
 
 // Main monitoring function
 public function main() returns error? {
-    io:println("=== Dependabot OpenAPI Monitor ===");
-    io:println("Starting OpenAPI specification monitoring...\n");
+    print("=== Dependabot OpenAPI Monitor ===", "Info", 0);
+    print("Starting OpenAPI specification monitoring...", "Info", 0);
 
-    // Get GitHub token
-    string? token = os:getEnv("GH_TOKEN");
-    if token is () {
-        io:println("Error: GH_TOKEN environment variable not set");
-        io:println("Please set the GH_TOKEN environment variable before running this program.");
+    // Get GitHub token - check multiple possible environment variables
+    string? ghToken = os:getEnv("GH_TOKEN");
+    string? ballerinaToken = os:getEnv("BALLERINA_BOT_TOKEN");
+    string? githubToken = os:getEnv("GITHUB_TOKEN");
+
+    string token = "";
+    if ghToken is string && ghToken.length() > 0 {
+        token = ghToken;
+    } else if ballerinaToken is string && ballerinaToken.length() > 0 {
+        token = ballerinaToken;
+    } else if githubToken is string && githubToken.length() > 0 {
+        token = githubToken;
+    }
+
+    if token.length() == 0 {
+        print("GitHub token not found. Please set one of: GH_TOKEN, BALLERINA_BOT_TOKEN, or GITHUB_TOKEN", "Error", 0);
         return;
     }
 
-    string tokenValue = <string>token;
 
-    // Validate token
-    if tokenValue.length() == 0 {
-        io:println("Error: GH_TOKEN is empty!");
-        return;
-    }
-
-    io:println(string `Token loaded (length: ${tokenValue.length()})`);
 
     // Initialize GitHub client
     github:Client githubClient = check new ({
         auth: {
-            token: tokenValue
+            token: token
         }
     });
 
@@ -724,7 +749,8 @@ public function main() returns error? {
     json reposJson = check io:fileReadJson("../repos.json");
     Repository[] repos = check reposJson.cloneWithType();
 
-    io:println(string `Found ${repos.length()} repositories to monitor.\n`);
+    print(string `Found ${repos.length()} repositories to monitor.`, "Info", 0);
+    io:println("");
 
     // Track updates
     UpdateResult[] updates = [];
@@ -738,9 +764,9 @@ public function main() returns error? {
         } else if repo.versioningStrategy == FILE_BASED {
             result = processFileBasedRepo(repo);
         } else if repo.versioningStrategy == ROLLOUT_BASED {
-            result = processRolloutBasedRepo(githubClient, repo, tokenValue);
+            result = processRolloutBasedRepo(githubClient, repo, token);
         } else {
-            io:println(string `Unknown versioning strategy: ${repo.versioningStrategy}`);
+            print(string `Unknown versioning strategy: ${repo.versioningStrategy}`, "Warn", 0);
         }
 
         if result is UpdateResult {
@@ -752,19 +778,22 @@ public function main() returns error? {
 
     // Report updates
     if updates.length() > 0 {
-        io:println(string `\nFound ${updates.length()} updates:\n`);
+        io:println("");
+        print(string `Found ${updates.length()} updates:`, "Info", 0);
+        io:println("");
 
         // Create update summary
         string[] updateSummary = [];
         foreach UpdateResult update in updates {
             string summary = string `${update.repo.vendor}/${update.repo.api}: ${update.oldVersion} -> ${update.newVersion} (${update.updateType} update)`;
-            io:println(summary);
+            print(summary, "Info", 1);
             updateSummary.push(summary);
         }
 
         // Update repos.json
         check io:fileWriteJson("../repos.json", repos.toJson());
-        io:println("\nUpdated repos.json with new versions and content hashes");
+        io:println("");
+        print("Updated repos.json with new versions and content hashes", "Info", 0);
 
         // Write update summary
         string summaryContent = string:'join("\n", ...updateSummary);
@@ -778,9 +807,9 @@ public function main() returns error? {
         // Get repository info
         [string, string]|error repoInfo = getCurrentRepo();
         if repoInfo is error {
-            io:println("Could not create PR automatically. Changes are ready in working directory.");
-            io:println("Please create a PR manually with the following branch name:");
-            io:println(string `  ${branchName}`);
+            print("Could not create PR automatically. Changes are ready in working directory.", "Warn", 0);
+            print("Please create a PR manually with the following branch name:", "Info", 0);
+            print(branchName, "Info", 1);
             return;
         }
 
@@ -830,13 +859,15 @@ public function main() returns error? {
         );
 
         if prUrl is string {
-            io:println("\nDone! Review the PR at: " + prUrl);
+            io:println("");
+            print("Done! Review the PR at: " + prUrl, "Info", 0);
         } else {
-            io:println("\nPR creation failed: " + prUrl.message());
-            io:println("Changes are committed. Please create PR manually.");
+            io:println("");
+            print("PR creation failed: " + prUrl.message(), "Error", 0);
+            print("Changes are committed. Please create PR manually.", "Info", 0);
         }
 
     } else {
-        io:println("All specifications are up-to-date!");
+        print("All specifications are up-to-date!", "Info", 0);
     }
 }
