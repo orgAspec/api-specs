@@ -17,7 +17,7 @@
         ],
         "versioningStrategy": "rollout-based",
         "branch": "main",
-        "connectorRepo": "orgBalLib/module-ballerinax-hubspot.crm.associations",
+        "connectorRepo": "orgABalLib/module-ballerinax-hubspot.crm.associations",
         "lastContentHash": ""
     }
 ]
