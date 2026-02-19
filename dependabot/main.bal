@@ -15,6 +15,8 @@
 // under the License.
 
 import ballerina/crypto;
+import ballerina/data.jsondata;
+import ballerina/data.yaml;
 import ballerina/file;
 import ballerinax/github;
 import ballerina/http;
@@ -159,8 +161,15 @@ function findLatestRollout(string owner, string repo, string branch, string base
     return maxRollout.toString();
 }
 
-// Extract version from OpenAPI spec content (works for both YAML and JSON)
-function extractApiVersion(string content) returns string|error {
+// Remove quotes from string
+function removeQuotes(string s) returns string {
+    return re `"|'`.replace(s, "");
+}
+
+// Regex-based version extraction as fallback
+function extractApiVersionWithRegex(string content) returns string|error {
+    print("Using regex-based version extraction", "Info", 2);
+
     // Split content by lines
     string[] lines = regexp:split(re `\n`, content);
     boolean inInfoSection = false;
@@ -177,6 +186,7 @@ function extractApiVersion(string content) returns string|error {
                 versionValue = removeQuotes(versionValue);
                 versionValue = regexp:replace(re `,`, versionValue, "").trim();
                 if versionValue.length() > 0 {
+                    print(string `Extracted version via regex (JSON): ${versionValue}`, "Info", 2);
                     return versionValue;
                 }
             }
@@ -200,13 +210,71 @@ function extractApiVersion(string content) returns string|error {
                 if parts.length() >= 2 {
                     string versionValue = parts[1].trim();
                     versionValue = removeQuotes(versionValue);
+                    print(string `Extracted version via regex (YAML): ${versionValue}`, "Info", 2);
                     return versionValue;
                 }
             }
         }
     }
 
-    return error("Could not extract API version from spec");
+    return error("Could not extract API version from spec using regex");
+}
+
+// Extract version from OpenAPI spec using proper YAML/JSON parsing with regex fallback
+function extractApiVersion(string content) returns string|error {
+    // Detect file format
+    string trimmedContent = content.trim();
+    boolean isJson = trimmedContent.startsWith("{") || trimmedContent.startsWith("[");
+
+    json parsedData = {};
+
+    // Try parsing with proper libraries first
+    if isJson {
+        json|error jsonResult = jsondata:parseString(content);
+        if jsonResult is error {
+            print(string `JSON parsing failed: ${jsonResult.message()}, falling back to regex`, "Warn", 2);
+            return extractApiVersionWithRegex(content);
+        }
+        parsedData = jsonResult;
+    } else {
+        json|error yamlResult = yaml:parseString(content);
+        if yamlResult is error {
+            print(string `YAML parsing failed: ${yamlResult.message()}, falling back to regex`, "Warn", 2);
+            return extractApiVersionWithRegex(content);
+        }
+        parsedData = yamlResult;
+    }
+
+    // Extract version from info.version field
+    if parsedData is map<json> {
+        json? infoField = parsedData["info"];
+        if infoField is () {
+            print("'info' field not found in parsed spec, falling back to regex", "Warn", 2);
+            return extractApiVersionWithRegex(content);
+        }
+
+        if infoField is map<json> {
+            json? versionField = infoField["version"];
+            if versionField is () {
+                print("'version' field not found under 'info', falling back to regex", "Warn", 2);
+                return extractApiVersionWithRegex(content);
+            }
+
+            if versionField is string {
+                print(string `Extracted version via YAML/JSON parsing: ${versionField}`, "Info", 2);
+                return versionField;
+            } else {
+                print("'version' field is not a string, falling back to regex", "Warn", 2);
+                return extractApiVersionWithRegex(content);
+            }
+        } else {
+            print("'info' field is not a map, falling back to regex", "Warn", 2);
+            return extractApiVersionWithRegex(content);
+        }
+    } else {
+        print("Parsed data is not a map, falling back to regex", "Warn", 2);
+        return extractApiVersionWithRegex(content);
+    }
 }
 
 // Download OpenAPI spec from release asset
@@ -306,11 +374,32 @@ function downloadSpecFromBranch(string owner, string repo, string branch, string
     // Get content
     string|byte[] content = check response.getTextPayload();
 
-
     return content is string ? content : string:fromBytes(content);
 }
 
-// Save spec to file
+// Detect file extension from content format
+function getFileExtension(string content) returns string {
+    string trimmedContent = content.trim();
+    boolean isJson = trimmedContent.startsWith("{") || trimmedContent.startsWith("[");
+    return isJson ? "json" : "yaml";
+}
+
+// Check if a spec file already exists in the directory (either .json or .yaml)
+function specFileExists(string dirPath) returns boolean|error {
+    if !check file:test(dirPath, file:EXISTS) {
+        return false;
+    }
+
+    string jsonPath = dirPath + "/openapi.json";
+    string yamlPath = dirPath + "/openapi.yaml";
+
+    boolean jsonExists = check file:test(jsonPath, file:EXISTS);
+    boolean yamlExists = check file:test(yamlPath, file:EXISTS);
+
+    return jsonExists || yamlExists;
+}
+
+// Save spec to file - preserves original format (JSON or YAML)
 function saveSpec(string content, string localPath) returns error? {
     // Create directory if it doesn't exist
     string dirPath = check file:parentPath(localPath);
@@ -318,7 +407,6 @@ function saveSpec(string content, string localPath) returns error? {
         check file:createDir(dirPath, file:RECURSIVE);
     }
 
-    // Write as openapi.json (JSON format)
     check io:fileWriteString(localPath, content);
     print(string `Saved to ${localPath}`, "Info", 1);
     return;
@@ -378,11 +466,6 @@ function createPullRequest(github:Client githubClient, string owner, string repo
     print("Added labels to PR", "Info", 0);
 
     return prUrl;
-}
-
-// Remove quotes from string
-function removeQuotes(string s) returns string {
-    return re `"|'`.replace(s, "");
 }
 
 // Helper: Extract API version from spec or fallback to tag name
@@ -481,7 +564,17 @@ function processRelease(github:Client githubClient, Repository repo, github:Rele
 
     string apiVersion = getApiVersion(specContent, tagName);
     string versionDir = "../openapi/" + repo.vendor + "/" + repo.api + "/" + apiVersion;
-    string localPath = versionDir + "/openapi.json";
+
+    // Check if spec file already exists - if yes, skip saving
+    boolean fileExists = check specFileExists(versionDir);
+    if fileExists {
+        print(string `Spec file already exists for version ${apiVersion}, skipping save`, "Info", 1);
+        return ();
+    }
+
+    // Detect file extension from content to preserve original format
+    string fileExtension = getFileExtension(specContent);
+    string localPath = versionDir + "/openapi." + fileExtension;
 
     // Save spec and metadata
     error? saveError = saveSpecAndMetadata(specContent, localPath, repo, apiVersion, versionDir);
@@ -562,7 +655,17 @@ function processFileBasedRepo(Repository repo) returns UpdateResult|error? {
 
         // Structure: openapi/{vendor}/{api}/{apiVersion}/
         string versionDir = "../openapi/" + repo.vendor + "/" + repo.api + "/" + apiVersion;
-        string localPath = versionDir + "/openapi.json";
+
+        // Check if spec file already exists - if yes, skip saving
+        boolean fileExists = check specFileExists(versionDir);
+        if fileExists {
+            print(string `Spec file already exists for version ${apiVersion}, skipping save`, "Info", 1);
+            return ();
+        }
+
+        // Detect file extension from content to preserve original format
+        string fileExtension = getFileExtension(specContent);
+        string localPath = versionDir + "/openapi." + fileExtension;
 
         // For content-only changes in same version, REPLACE existing files
         if !versionChanged && contentChanged {
@@ -677,7 +780,17 @@ function processRolloutBasedRepo(github:Client githubClient, Repository repo, st
 
         // Structure: openapi/{vendor}/{api}/rollout-{rolloutNumber}/
         string versionDir = "../openapi/" + repo.vendor + "/" + repo.api + "/rollout-" + latestRollout;
-        string localPath = versionDir + "/openapi.json";
+
+        // Check if spec file already exists - if yes, skip saving
+        boolean fileExists = check specFileExists(versionDir);
+        if fileExists {
+            print(string `Spec file already exists for rollout ${latestRollout}, skipping save`, "Info", 1);
+            return ();
+        }
+
+        // Detect file extension from content to preserve original format
+        string fileExtension = getFileExtension(specContent);
+        string localPath = versionDir + "/openapi." + fileExtension;
 
         // For content-only changes in same rollout, REPLACE existing files
         if !rolloutChanged && contentChanged {
@@ -743,8 +856,6 @@ public function main() returns error? {
         print("GitHub token not found. Please set one of: GH_TOKEN, BALLERINA_BOT_TOKEN, or GITHUB_TOKEN", "Error", 0);
         return;
     }
-
-
 
     // Initialize GitHub client
     github:Client githubClient = check new ({
