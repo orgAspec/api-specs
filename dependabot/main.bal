@@ -66,6 +66,7 @@ type UpdateResult record {|
     string localPath;
     boolean contentChanged;
     string updateType; // "version" or "content" or "both"
+    string folderPath; // The actual folder path created (e.g., "openapi/twilio/twilio/1.0.0")
 |};
 
 // Check for version updates
@@ -496,7 +497,7 @@ function saveSpecAndMetadata(string specContent, string localPath, Repository re
 
 // Helper: Build update result record
 function buildUpdateResult(Repository repo, string oldVersion, string newVersion, string apiVersion,
-        string downloadUrl, string localPath, boolean contentChanged, string updateType) returns UpdateResult {
+        string downloadUrl, string localPath, boolean contentChanged, string updateType, string folderPath) returns UpdateResult {
     return {
         repo: repo,
         oldVersion: oldVersion,
@@ -505,7 +506,8 @@ function buildUpdateResult(Repository repo, string oldVersion, string newVersion
         downloadUrl: downloadUrl,
         localPath: localPath,
         contentChanged: contentChanged,
-        updateType: updateType
+        updateType: updateType,
+        folderPath: folderPath
     };
 }
 
@@ -587,10 +589,13 @@ function processRelease(github:Client githubClient, Repository repo, github:Rele
     repo.lastVersion = tagName;
     repo.lastContentHash = contentHash;
 
+    // Create folder path for UPDATE_SUMMARY.txt
+    string folderPath = "openapi/" + repo.vendor + "/" + repo.api + "/" + apiVersion;
+
     return buildUpdateResult(
         repo, oldVersion, tagName, apiVersion,
         "https://github.com/" + repo.owner + "/" + repo.repo + "/releases/tag/" + tagName,
-        localPath, contentChanged, updateType
+        localPath, contentChanged, updateType, folderPath
     );
 }
 
@@ -690,6 +695,9 @@ function processFileBasedRepo(Repository repo) returns UpdateResult|error? {
         repo.lastVersion = apiVersion;
         repo.lastContentHash = contentHash;
 
+        // Create folder path for UPDATE_SUMMARY.txt
+        string folderPath = "openapi/" + repo.vendor + "/" + repo.api + "/" + apiVersion;
+
         // Return the update result
         return {
             repo: repo,
@@ -699,7 +707,8 @@ function processFileBasedRepo(Repository repo) returns UpdateResult|error? {
             downloadUrl: string `https://github.com/${repo.owner}/${repo.repo}/blob/${branch}/${repo.specPath}`,
             localPath: localPath,
             contentChanged: contentChanged,
-            updateType: updateType
+            updateType: updateType,
+            folderPath: folderPath
         };
     } else {
         print(string `No updates (version: ${apiVersion}, content unchanged)`, "Info", 1);
@@ -816,6 +825,9 @@ function processRolloutBasedRepo(github:Client githubClient, Repository repo, st
         repo.specPath = currentSpecPath;
         repo.lastContentHash = contentHash;
 
+        // Create folder path for UPDATE_SUMMARY.txt
+        string folderPath = "openapi/" + repo.vendor + "/" + repo.api + "/rollout-" + latestRollout;
+
         // Return the update result
         return {
             repo: repo,
@@ -825,7 +837,8 @@ function processRolloutBasedRepo(github:Client githubClient, Repository repo, st
             downloadUrl: string `https://github.com/${repo.owner}/${repo.repo}/blob/${branch}/${currentSpecPath}`,
             localPath: localPath,
             contentChanged: contentChanged,
-            updateType: updateType
+            updateType: updateType,
+            folderPath: folderPath
         };
     } else {
         print(string `No updates (rollout: ${latestRollout}, content unchanged)`, "Info", 1);
@@ -901,10 +914,11 @@ public function main() returns error? {
         print(string `Found ${updates.length()} updates:`, "Info", 0);
         io:println("");
 
-        // Create update summary
+        // Create update summary with folder paths
         string[] updateSummary = [];
         foreach UpdateResult update in updates {
-            string summary = string `${update.repo.vendor}/${update.repo.api}: ${update.oldVersion} -> ${update.newVersion} (${update.updateType} update)`;
+            // Format: vendor/api: oldVersion -> newVersion -> folderPath
+            string summary = string `${update.repo.vendor}/${update.repo.api}: ${update.oldVersion} -> ${update.newVersion} -> ${update.folderPath}`;
             print(summary, "Info", 1);
             updateSummary.push(summary);
         }

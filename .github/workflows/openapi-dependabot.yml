@@ -179,69 +179,112 @@ jobs:
           echo "UPDATE_SUMMARY.txt contents:"
           cat UPDATE_SUMMARY.txt
           echo ""
+          echo "---"
 
+          # Process each line in UPDATE_SUMMARY.txt
+          # NEW FORMAT: vendor/api: oldVersion -> newVersion -> openapi/vendor/api/VERSION
           while IFS= read -r line || [ -n "$line" ]; do
-            echo "Processing line: $line"
+            echo "Processing line: '$line'"
 
-            if echo "$line" | grep -qE "^.+/.+:"; then
-              SPEC_PATH=$(echo "$line" | sed 's/^[^a-zA-Z]*\([a-zA-Z][^:]*\):.*/\1/' | xargs)
+            # Check if this line contains a specification update
+            if echo "$line" | grep -qE "^[[:space:]]*[a-zA-Z]"; then
+
+              # Extract vendor/api from the beginning of the line (before the colon)
+              SPEC_PATH=$(echo "$line" | sed -E 's/^[[:space:]]*([a-zA-Z][^:]*):.*$/\1/' | xargs)
+
+              # Validate we got a proper vendor/api path
+              if [[ ! "$SPEC_PATH" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$ ]]; then
+                echo "Could not parse vendor/api from line, skipping"
+                continue
+              fi
+
               VENDOR=$(echo "$SPEC_PATH" | cut -d'/' -f1)
               API=$(echo "$SPEC_PATH" | cut -d'/' -f2)
 
               echo "Detected update for: $VENDOR/$API"
 
+              # Extract the folder path from the line
+              # Format: vendor/api: oldVersion -> newVersion -> openapi/vendor/api/VERSION
+              # We want to extract everything after the last "->"
+              FOLDER_PATH=$(echo "$line" | grep -oP '-> \K[^ ]+$' | xargs)
+
+              if [ -z "$FOLDER_PATH" ]; then
+                echo "ERROR: Could not extract folder path from update summary for $VENDOR/$API"
+                echo "Line content: $line"
+                echo "Skipping this connector..."
+                continue
+              fi
+
+              echo "Successfully extracted folder path: $FOLDER_PATH"
+
+              # Extract just the version directory name from the full path
+              # e.g., "openapi/twilio/twilio/1.0.0" -> "1.0.0"
+              VERSION_DIR=$(echo "$FOLDER_PATH" | awk -F'/' '{print $NF}')
+
+              if [ -z "$VERSION_DIR" ]; then
+                echo "ERROR: Could not extract version directory from folder path"
+                echo "Folder path: $FOLDER_PATH"
+                echo "Skipping this connector..."
+                continue
+              fi
+
+              echo "Extracted version directory: $VERSION_DIR"
+
+              # Look up the connector repository from repos.json
               CONNECTOR_REPO=$(jq -r ".[] | select(.vendor==\"$VENDOR\" and .api==\"$API\") | .connectorRepo" repos.json)
 
-              if [ -n "$CONNECTOR_REPO" ] && [ "$CONNECTOR_REPO" != "null" ]; then
-                echo "Triggering update for $CONNECTOR_REPO"
-
-                VERSIONING_STRATEGY=$(jq -r ".[] | select(.vendor==\"$VENDOR\" and .api==\"$API\") | .versioningStrategy" repos.json)
-                echo "Versioning strategy: $VERSIONING_STRATEGY"
-
-                # Determine VERSION_DIR by looking at what folder was actually created
-                OPENAPI_DIR="openapi/${VENDOR}/${API}"
-
-                if [ "$VERSIONING_STRATEGY" = "rollout-based" ]; then
-                  # For rollout-based, folder is prefixed with "rollout-"
-                  VERSION_DIR=$(ls -d ${OPENAPI_DIR}/rollout-* 2>/dev/null | sort -V | tail -1 | xargs basename)
-                else
-                  # For release-tag and file-based, find the actual folder created
-                  # (it's named after the API version inside the spec, NOT the release tag)
-                  VERSION_DIR=$(ls -d ${OPENAPI_DIR}/*/ 2>/dev/null | sort -V | tail -1 | xargs basename)
-                fi
-
-                if [ -z "$VERSION_DIR" ]; then
-                  echo "Could not determine version directory for $VENDOR/$API, skipping"
-                  continue
-                fi
-
-                echo "Actual version directory: $VERSION_DIR"
-
-                # Use main branch since PR is merged
-                SPEC_URL="https://raw.githubusercontent.com/orgAspec/api-specs/main/openapi/${VENDOR}/${API}/${VERSION_DIR}/openapi.json"
-                echo "Spec URL: $SPEC_URL"
-
-                echo "Sending repository_dispatch to $CONNECTOR_REPO..."
-                gh api \
-                  repos/"$CONNECTOR_REPO"/dispatches \
-                  -X POST \
-                  -f event_type=openapi-update \
-                  -f client_payload[sender]=orgAspec/api-specs \
-                  -f client_payload[openapi_url]="$SPEC_URL" \
-                  -f client_payload[spec_version]="$VERSION_DIR"
-
-                echo "Triggered for $CONNECTOR_REPO"
-              else
-                echo "No connector repo found for $VENDOR/$API"
+              if [ -z "$CONNECTOR_REPO" ] || [ "$CONNECTOR_REPO" = "null" ]; then
+                echo "No connector repository configured for $VENDOR/$API in repos.json"
+                continue
               fi
+
+              echo "Found connector repository: $CONNECTOR_REPO"
+
+              # Construct the spec URL using the folder path
+              SPEC_URL="https://raw.githubusercontent.com/orgAspec/api-specs/main/${FOLDER_PATH}/openapi.json"
+              echo "Constructed spec URL: $SPEC_URL"
+
+              # Verify the URL is accessible (optional but recommended)
+              echo "Verifying spec URL accessibility..."
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$SPEC_URL")
+              if [ "$HTTP_CODE" != "200" ]; then
+                echo "WARNING: Spec URL returned HTTP $HTTP_CODE. Checking if YAML exists..."
+                # Try YAML as fallback
+                SPEC_URL="https://raw.githubusercontent.com/orgAspec/api-specs/main/${FOLDER_PATH}/openapi.yaml"
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$SPEC_URL")
+                if [ "$HTTP_CODE" != "200" ]; then
+                  echo "ERROR: Neither JSON nor YAML spec found at $FOLDER_PATH"
+                  echo "Skipping this connector..."
+                  continue
+                else
+                  echo "Found YAML spec instead"
+                fi
+              else
+                echo "Spec URL verified successfully (HTTP 200)"
+              fi
+
+              # Trigger the connector repository workflow
+              echo "Sending repository_dispatch event to $CONNECTOR_REPO..."
+
+              gh api \
+                repos/"$CONNECTOR_REPO"/dispatches \
+                -X POST \
+                -f event_type=openapi-update \
+                -f client_payload[sender]=orgAspec/api-specs \
+                -f client_payload[openapi_url]="$SPEC_URL" \
+                -f client_payload[spec_version]="$VERSION_DIR" \
+                && echo "✓ Successfully triggered connector regeneration for $CONNECTOR_REPO" \
+                || echo "✗ Failed to trigger connector regeneration for $CONNECTOR_REPO"
+
             fi
           done < UPDATE_SUMMARY.txt
 
-          echo "All connector regenerations triggered!"
+          echo ""
+          echo "All connector regeneration triggers completed!"
 
       - name: Notify on failure
         if: failure() && env.UPDATES_FOUND == 'true'
         run: |
           if [ -n "$PR_NUMBER" ]; then
-            gh pr comment "$PR_NUMBER" --body "Connector regeneration workflow failed. Please check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
+            gh pr comment "$PR_NUMBER" --body "⚠️ Connector regeneration workflow encountered an error. Please check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
           fi
