@@ -716,6 +716,31 @@ function processFileBasedRepo(Repository repo) returns UpdateResult|error? {
     }
 }
 
+// Helper: Remove existing openapi spec files from a directory (for rollout-based updates)
+function removeExistingSpecFiles(string versionDir) returns error? {
+    if !check file:test(versionDir, file:EXISTS) {
+        // Directory doesn't exist, nothing to remove
+        return;
+    }
+
+    string jsonPath = versionDir + "/openapi.json";
+    string yamlPath = versionDir + "/openapi.yaml";
+
+    // Remove JSON spec if exists
+    if check file:test(jsonPath, file:EXISTS) {
+        check file:remove(jsonPath);
+        print(string `Removed existing ${jsonPath}`, "Info", 2);
+    }
+
+    // Remove YAML spec if exists
+    if check file:test(yamlPath, file:EXISTS) {
+        check file:remove(yamlPath);
+        print(string `Removed existing ${yamlPath}`, "Info", 2);
+    }
+
+    return;
+}
+
 // Process repository with rollout-based versioning strategy (for HubSpot)
 function processRolloutBasedRepo(github:Client githubClient, Repository repo, string token) returns UpdateResult|error? {
     print(string `Checking: ${repo.name} (${repo.vendor}/${repo.api}) [Rollout-Based Strategy]`, "Info", 0);
@@ -776,37 +801,35 @@ function processRolloutBasedRepo(github:Client githubClient, Repository repo, st
         string updateType = rolloutChanged && contentChanged ? "both" : (rolloutChanged ? "rollout" : "content");
         print(string `UPDATE DETECTED! (Rollout ${repo.lastVersion} -> ${latestRollout}, Type: ${updateType})`, "Info", 1);
 
-        // Extract API version from spec
-        string apiVersion = "";
-        var apiVersionResult = extractApiVersion(specContent);
+        // Extract API version from spec (CRITICAL: Use actual version, not rollout number)
+        string|error apiVersionResult = extractApiVersion(specContent);
         if apiVersionResult is error {
-            print("Could not extract API version from spec, using rollout number", "Warn", 1);
-            apiVersion = latestRollout;
-        } else {
-            apiVersion = apiVersionResult;
-            print(string `API Version: ${apiVersion}`, "Info", 1);
+            print("ERROR: Could not extract API version from spec - this is required for rollout-based strategy", "Error", 1);
+            return error("Cannot extract version from spec");
         }
 
-        // Structure: openapi/{vendor}/{api}/rollout-{rolloutNumber}/
-        string versionDir = "../openapi/" + repo.vendor + "/" + repo.api + "/rollout-" + latestRollout;
+        string apiVersion = apiVersionResult;
+        print(string `API Version from spec: ${apiVersion}`, "Info", 1);
 
-        // Check if spec file already exists - if yes, skip saving
-        boolean fileExists = check specFileExists(versionDir);
-        if fileExists {
-            print(string `Spec file already exists for rollout ${latestRollout}, skipping save`, "Info", 1);
-            return ();
+        // IMPORTANT: Use API version as folder name (e.g., "v4"), NOT rollout number
+        // Structure: openapi/{vendor}/{api}/{apiVersion}/
+        string versionDir = "../openapi/" + repo.vendor + "/" + repo.api + "/" + apiVersion;
+
+        // For rollout-based strategy: ALWAYS remove existing spec files and replace with new rollout
+        // This ensures each version folder contains only the latest rollout's spec
+        print(string `Removing any existing spec files in ${versionDir} before saving new rollout`, "Info", 1);
+        error? removeResult = removeExistingSpecFiles(versionDir);
+        if removeResult is error {
+            print("Failed to remove existing files: " + removeResult.message(), "Warn", 1);
         }
 
         // Detect file extension from content to preserve original format
         string fileExtension = getFileExtension(specContent);
         string localPath = versionDir + "/openapi." + fileExtension;
 
-        // For content-only changes in same rollout, REPLACE existing files
-        if !rolloutChanged && contentChanged {
-            print(string `Content update within rollout ${latestRollout} - replacing existing files`, "Info", 1);
-        }
+        print(string `Saving new rollout ${latestRollout} spec to version folder ${apiVersion}`, "Info", 1);
 
-        // Save the spec (will overwrite if exists for content-only updates)
+        // Save the new spec (will create directory if needed)
         error? saveResult = saveSpec(specContent, localPath);
         if saveResult is error {
             print("Save failed: " + saveResult.message(), "Error", 1);
@@ -814,26 +837,26 @@ function processRolloutBasedRepo(github:Client githubClient, Repository repo, st
         }
 
         // Create/update metadata.json
-        error? metadataResult = createMetadataFile(repo, latestRollout, versionDir);
+        error? metadataResult = createMetadataFile(repo, apiVersion, versionDir);
         if metadataResult is error {
             print("Metadata creation failed: " + metadataResult.message(), "Error", 1);
         }
 
         // Update the repo record with new rollout and path
-        string oldVersion = repo.lastVersion;
+        string oldRollout = repo.lastVersion;
         repo.lastVersion = latestRollout;
         repo.specPath = currentSpecPath;
         repo.lastContentHash = contentHash;
 
-        // Create folder path for UPDATE_SUMMARY.txt
-        string folderPath = "openapi/" + repo.vendor + "/" + repo.api + "/rollout-" + latestRollout;
+        // Create folder path for UPDATE_SUMMARY.txt (use actual API version)
+        string folderPath = "openapi/" + repo.vendor + "/" + repo.api + "/" + apiVersion;
 
         // Return the update result
         return {
             repo: repo,
-            oldVersion: "rollout-" + oldVersion,
+            oldVersion: "rollout-" + oldRollout,
             newVersion: "rollout-" + latestRollout,
-            apiVersion: "rollout-" + latestRollout,
+            apiVersion: apiVersion, // Use actual API version, not rollout number
             downloadUrl: string `https://github.com/${repo.owner}/${repo.repo}/blob/${branch}/${currentSpecPath}`,
             localPath: localPath,
             contentChanged: contentChanged,
@@ -971,7 +994,8 @@ public function main() returns error? {
             "### Important Notes:\n" +
             "- Content-only updates replace files in existing directories to maintain single source of truth\n" +
             "- Version/rollout changes create new directories to preserve history\n" +
-            "- All changes are tracked via SHA-256 content hashing\n\n" +
+            "- All changes are tracked via SHA-256 content hashing\n" +
+            "- **Rollout-based strategy**: Uses actual API version (e.g., v4) as folder name, replaces spec files on new rollouts\n\n" +
             "### Checklist:\n" +
             "- [ ] Review specification changes\n" +
             "- [ ] Verify connector generation works\n" +
