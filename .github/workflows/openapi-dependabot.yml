@@ -401,8 +401,22 @@ jobs:
           echo "Collected information for $(cat connector_prs.json | jq 'length') connectors:"
           cat connector_prs.json | jq '.'
 
+      - name: Prepare email content
+        if: env.CONNECTORS_TRIGGERED == 'true'
+        id: prepare_email
+        run: |
+          CURRENT_DATE=$(date +%Y-%m-%d)
+          CURRENT_DATETIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          TOTAL_CONNECTORS=$(cat connector_prs.json | jq 'length')
+
+          echo "email_subject=Daily Connector Updates Summary - ${CURRENT_DATE}" >> $GITHUB_OUTPUT
+          echo "email_date=${CURRENT_DATETIME}" >> $GITHUB_OUTPUT
+          echo "total_connectors=${TOTAL_CONNECTORS}" >> $GITHUB_OUTPUT
+
       - name: Send consolidated daily email
         if: env.CONNECTORS_TRIGGERED == 'true'
+        continue-on-error: true
+        id: send_email
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
@@ -410,16 +424,16 @@ jobs:
           secure: true
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          subject: "Daily Connector Updates Summary - $(date +%Y-%m-%d)"
+          subject: ${{ steps.prepare_email.outputs.email_subject }}
           to: t37714687@gmail.com
           from: ${{ secrets.GMAIL_USERNAME }}
           body: |
             Daily Connector Updates Summary
-            Generated: $(date -u +%Y-%m-%d\ %H:%M:%S\ UTC)
+            Generated: ${{ steps.prepare_email.outputs.email_date }}
 
             This email contains a summary of all connector version updates processed today.
 
-            See the attached HTML version for a detailed table view.
+            See the HTML version below for a detailed table view.
 
             ---
             This is an automated message from the OpenAPI Dependabot system.
@@ -545,12 +559,12 @@ jobs:
             <body>
               <div class="header">
                 <h1>Daily Connector Updates Summary</h1>
-                <div class="date">Generated: $(date -u +%Y-%m-%d\ %H:%M:%S\ UTC)</div>
+                <div class="date">Generated: ${{ steps.prepare_email.outputs.email_date }}</div>
               </div>
 
               <div class="summary-box">
                 <h3>Summary</h3>
-                <p>Total connectors updated: <strong>$(cat connector_prs.json | jq 'length')</strong></p>
+                <p>Total connectors updated: <strong>${{ steps.prepare_email.outputs.total_connectors }}</strong></p>
               </div>
 
               <table>
@@ -584,6 +598,26 @@ jobs:
               </div>
             </body>
             </html>
+
+      - name: Log email status
+        if: env.CONNECTORS_TRIGGERED == 'true'
+        run: |
+          if [ "${{ steps.send_email.outcome }}" == "success" ]; then
+            echo "Email sent successfully to t37714687@gmail.com"
+          else
+            echo "WARNING: Email sending failed. Check GMAIL_USERNAME and GMAIL_APP_PASSWORD secrets."
+            echo "Email subject would have been: ${{ steps.prepare_email.outputs.email_subject }}"
+            echo "Connector data is still available in connector_prs.json artifact"
+          fi
+
+      - name: Upload connector PR data as artifact
+        if: env.CONNECTORS_TRIGGERED == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: connector-prs-summary
+          path: |
+            connector_prs.json
+            triggered_connectors.txt
 
       - name: Notify on failure
         if: failure() && env.UPDATES_FOUND == 'true'
