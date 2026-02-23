@@ -182,52 +182,28 @@ jobs:
           echo "---"
 
           # Process each line in UPDATE_SUMMARY.txt
-          # FORMAT: vendor/api: oldVersion -> newVersion -> openapi/vendor/api/VERSION
+          # NEW SIMPLE FORMAT: vendor/api:version
+          # Example: hubspot/crm.associations:v4
           while IFS= read -r line || [ -n "$line" ]; do
+            # Skip empty lines
+            if [ -z "$line" ]; then
+              continue
+            fi
+
             echo "Processing line: '$line'"
 
-            # Check if this line contains a specification update
-            if echo "$line" | grep -qE "^[[:space:]]*[a-zA-Z]"; then
+            # Extract vendor/api and version using simple string splitting
+            # Format: vendor/api:version
+            if [[ "$line" =~ ^([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+):(.+)$ ]]; then
+              SPEC_PATH="${BASH_REMATCH[1]}"
+              VERSION_DIR="${BASH_REMATCH[2]}"
 
-              # Extract vendor/api from the beginning of the line (before the colon)
-              SPEC_PATH=$(echo "$line" | sed -E 's/^[[:space:]]*([a-zA-Z][^:]*):.*$/\1/' | xargs)
-
-              # Validate we got a proper vendor/api path
-              if [[ ! "$SPEC_PATH" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$ ]]; then
-                echo "Could not parse vendor/api from line, skipping"
-                continue
-              fi
+              echo "Parsed - Spec: $SPEC_PATH, Version: $VERSION_DIR"
 
               VENDOR=$(echo "$SPEC_PATH" | cut -d'/' -f1)
               API=$(echo "$SPEC_PATH" | cut -d'/' -f2)
 
-              echo "Detected update for: $VENDOR/$API"
-
-              # Extract the folder path using awk (more reliable than grep -P)
-              # Get everything after the last arrow (->)
-              FOLDER_PATH=$(echo "$line" | awk -F' -> ' '{print $NF}' | xargs)
-
-              if [ -z "$FOLDER_PATH" ]; then
-                echo "ERROR: Could not extract folder path from update summary for $VENDOR/$API"
-                echo "Line content: $line"
-                echo "Skipping this connector..."
-                continue
-              fi
-
-              echo "Successfully extracted folder path: $FOLDER_PATH"
-
-              # Extract just the version directory name from the full path
-              # e.g., "openapi/twilio/twilio/1.0.0" -> "1.0.0"
-              VERSION_DIR=$(echo "$FOLDER_PATH" | awk -F'/' '{print $NF}')
-
-              if [ -z "$VERSION_DIR" ]; then
-                echo "ERROR: Could not extract version directory from folder path"
-                echo "Folder path: $FOLDER_PATH"
-                echo "Skipping this connector..."
-                continue
-              fi
-
-              echo "Extracted version directory: $VERSION_DIR"
+              echo "Detected update for: $VENDOR/$API (version: $VERSION_DIR)"
 
               # Look up the connector repository from repos.json
               CONNECTOR_REPO=$(jq -r ".[] | select(.vendor==\"$VENDOR\" and .api==\"$API\") | .connectorRepo" repos.json)
@@ -239,8 +215,8 @@ jobs:
 
               echo "Found connector repository: $CONNECTOR_REPO"
 
-              # Construct the spec URL using the folder path
-              SPEC_URL="https://raw.githubusercontent.com/orgAspec/api-specs/main/${FOLDER_PATH}/openapi.json"
+              # Construct the spec URL
+              SPEC_URL="https://raw.githubusercontent.com/orgAspec/api-specs/main/openapi/${VENDOR}/${API}/${VERSION_DIR}/openapi.json"
               echo "Constructed spec URL: $SPEC_URL"
 
               # Verify the URL is accessible
@@ -249,10 +225,10 @@ jobs:
               if [ "$HTTP_CODE" != "200" ]; then
                 echo "WARNING: JSON spec returned HTTP $HTTP_CODE. Checking if YAML exists..."
                 # Try YAML as fallback
-                SPEC_URL="https://raw.githubusercontent.com/orgAspec/api-specs/main/${FOLDER_PATH}/openapi.yaml"
+                SPEC_URL="https://raw.githubusercontent.com/orgAspec/api-specs/main/openapi/${VENDOR}/${API}/${VERSION_DIR}/openapi.yaml"
                 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$SPEC_URL")
                 if [ "$HTTP_CODE" != "200" ]; then
-                  echo "ERROR: Neither JSON nor YAML spec found at $FOLDER_PATH"
+                  echo "ERROR: Neither JSON nor YAML spec found at openapi/${VENDOR}/${API}/${VERSION_DIR}"
                   echo "Skipping this connector..."
                   continue
                 else
@@ -275,6 +251,8 @@ jobs:
                 && echo "✓ Successfully triggered connector regeneration for $CONNECTOR_REPO" \
                 || echo "✗ Failed to trigger connector regeneration for $CONNECTOR_REPO"
 
+            else
+              echo "Line does not match expected format 'vendor/api:version', skipping"
             fi
           done < UPDATE_SUMMARY.txt
 

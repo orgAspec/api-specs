@@ -937,12 +937,13 @@ public function main() returns error? {
         print(string `Found ${updates.length()} updates:`, "Info", 0);
         io:println("");
 
-        // Create update summary with folder paths
+        // Create update summary with SIMPLE format: vendor/api:version
         string[] updateSummary = [];
         foreach UpdateResult update in updates {
-            // Format: vendor/api: oldVersion -> newVersion -> folderPath
-            string summary = string `${update.repo.vendor}/${update.repo.api}: ${update.oldVersion} -> ${update.newVersion} -> ${update.folderPath}`;
-            print(summary, "Info", 1);
+            // SIMPLE FORMAT for easy parsing in workflow
+            // Format: vendor/api:apiVersion
+            string summary = string `${update.repo.vendor}/${update.repo.api}:${update.apiVersion}`;
+            print(string `${update.repo.vendor}/${update.repo.api}: ${update.oldVersion} -> ${update.newVersion} (${update.updateType} update)`, "Info", 1);
             updateSummary.push(summary);
         }
 
@@ -976,6 +977,12 @@ public function main() returns error? {
         time:Civil civil = time:utcToCivil(currentTime);
         string prTitle = string `Update OpenAPI Specifications - ${civil.year}-${civil.month}-${civil.day}`;
 
+        // Build Changes section for PR body
+        string changesContent = "";
+        foreach var u in updates {
+            changesContent = changesContent + string `- ${u.repo.vendor}/${u.repo.api}: ${u.oldVersion} -> ${u.newVersion} (${u.updateType} update)\n`;
+        }
+
         // Build Files Changed section
         string filesChangedContent = "";
         foreach var u in updates {
@@ -985,7 +992,7 @@ public function main() returns error? {
 
         string prBody = "## OpenAPI Specification Updates\n\n" +
             "This PR contains automated updates to OpenAPI specifications detected by the Dependabot monitor.\n\n" +
-            "### Changes:\n" + summaryContent + "\n\n" +
+            "### Changes:\n" + changesContent + "\n" +
             "### Files Changed:\n" + filesChangedContent + "\n" +
             "### Update Types:\n" +
             "- Version update: New API version/rollout released (creates new directory)\n" +
