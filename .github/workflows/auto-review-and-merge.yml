@@ -2,7 +2,7 @@ name: Auto Review & Merge
 
 on:
   pull_request:
-    types: [opened]  # Only trigger on PR creation, not on label or synchronize
+    types: [opened]
 
 permissions:
   contents: write
@@ -13,7 +13,6 @@ jobs:
   review-and-merge:
     runs-on: ubuntu-latest
 
-    # Only run on PRs with the openapi-update label
     if: contains(github.event.pull_request.labels.*.name, 'openapi-update')
 
     steps:
@@ -29,7 +28,6 @@ jobs:
         run: |
           echo "Validating PR changes..."
 
-          # Check if only expected files are changed
           CHANGED_FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files -q '.files[].path')
 
           echo "Changed files:"
@@ -37,7 +35,6 @@ jobs:
 
           VALID=true
           for file in $CHANGED_FILES; do
-            # Allow changes to openapi/, repos.json, and UPDATE_SUMMARY.txt
             if [[ ! "$file" =~ ^openapi/ ]] && [[ "$file" != "repos.json" ]] && [[ "$file" != "UPDATE_SUMMARY.txt" ]]; then
               echo "Unexpected file change: $file"
               VALID=false
@@ -63,7 +60,6 @@ jobs:
           VALIDATION_PASSED=true
           VALIDATION_ERRORS=""
 
-          # Find all openapi.json files in the changed files
           OPENAPI_FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files -q '.files[].path' | grep 'openapi.json$' || true)
 
           if [ -z "$OPENAPI_FILES" ]; then
@@ -83,7 +79,6 @@ jobs:
             echo ""
             echo "Checking: $file"
 
-            # Check if file exists
             if [ ! -f "$file" ]; then
               echo "File not found: $file"
               VALIDATION_PASSED=false
@@ -91,7 +86,6 @@ jobs:
               continue
             fi
 
-            # Check if corresponding .metadata.json exists
             DIR=$(dirname "$file")
             METADATA_FILE="$DIR/.metadata.json"
 
@@ -104,7 +98,6 @@ jobs:
             else
               echo "Metadata file exists: $METADATA_FILE"
 
-              # Validate metadata is valid JSON
               if ! jq empty "$METADATA_FILE" 2>/dev/null; then
                 echo "Invalid JSON in metadata file: $METADATA_FILE"
                 VALIDATION_PASSED=false
@@ -114,7 +107,6 @@ jobs:
               fi
             fi
 
-            # Validate JSON format and check for "openapi" field
             if ! jq empty "$file" 2>/dev/null; then
               echo "Invalid JSON format in: $file"
               VALIDATION_PASSED=false
@@ -122,7 +114,6 @@ jobs:
             else
               echo "Valid JSON format: $file"
 
-              # Check for "openapi" field in JSON
               if ! jq -e '.openapi' "$file" >/dev/null 2>&1; then
                 echo "Missing 'openapi' field in: $file"
                 VALIDATION_PASSED=false
@@ -132,7 +123,6 @@ jobs:
                 echo "Valid OpenAPI spec (version: $OPENAPI_VERSION)"
               fi
 
-              # Check for "info" field
               if ! jq -e '.info' "$file" >/dev/null 2>&1; then
                 echo "Warning: Missing 'info' field in: $file"
               fi
@@ -198,7 +188,6 @@ jobs:
 
               console.log("PR merged successfully");
 
-              // Add success comment
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -209,7 +198,6 @@ jobs:
             } catch (error) {
               console.error("Failed to merge PR:", error);
 
-              // Comment on PR about merge failure
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
