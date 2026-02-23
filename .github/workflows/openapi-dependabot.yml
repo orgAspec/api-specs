@@ -265,48 +265,62 @@ jobs:
           TOTAL_CONNECTORS=$(wc -l < triggered_connectors.txt)
           echo "Monitoring $TOTAL_CONNECTORS connector repositories..."
 
-          MAX_WAIT=1200  # 20 minutes maximum
-          CHECK_INTERVAL=30  # Check every 30 seconds
+          # Connector generation takes ~10-12 min, version analysis takes ~2-3 min
+          # Wait at least 10 minutes before first check to allow workflows to complete
+          INITIAL_WAIT=600  # 10 minutes
+          echo "Waiting ${INITIAL_WAIT} seconds for connector generation workflows to start processing..."
+          sleep $INITIAL_WAIT
+
+          MAX_WAIT=1800  # 30 minutes maximum total wait (after initial wait)
+          CHECK_INTERVAL=60  # Check every 60 seconds
           ELAPSED=0
+
+          # Store the start time for filtering PRs
+          START_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "Will look for PRs created after workflow start..."
 
           while [ $ELAPSED -lt $MAX_WAIT ]; do
             COMPLETED=0
 
-            # Check each connector repository for recent PRs
+            # Use a temp file to avoid subshell issues
+            > /tmp/completed_count.txt
+
             while IFS='|' read -r REPO SPEC VERSION; do
-              SINCE_TIME=$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)
-
-              PR_COUNT=$(gh pr list \
+              # Look for PRs that contain "Auto-generated connector" in title (from analyze-version-change)
+              PR_INFO=$(gh pr list \
                 --repo "$REPO" \
-                --state all \
+                --state open \
                 --limit 5 \
-                --json createdAt \
-                --jq "[.[] | select(.createdAt > \"$SINCE_TIME\")] | length" 2>/dev/null || echo "0")
+                --json number,title,createdAt \
+                --jq '.[] | select(.title | contains("Auto-generated connector"))' 2>/dev/null || echo "")
 
-              if [ "$PR_COUNT" -gt 0 ]; then
-                COMPLETED=$((COMPLETED + 1))
+              if [ -n "$PR_INFO" ]; then
+                echo "1" >> /tmp/completed_count.txt
+                echo "  ✓ $REPO - PR found"
+              else
+                echo "  ⏳ $REPO - Waiting..."
               fi
             done < triggered_connectors.txt
 
-            echo "Progress: $COMPLETED/$TOTAL_CONNECTORS connectors have created PRs (${ELAPSED}s elapsed)"
+            COMPLETED=$(wc -l < /tmp/completed_count.txt)
 
-            # If all connectors have created PRs, we're done
-            if [ $COMPLETED -eq $TOTAL_CONNECTORS ]; then
+            echo ""
+            echo "Progress: $COMPLETED/$TOTAL_CONNECTORS connectors have created PRs (${ELAPSED}s after initial wait)"
+
+            if [ "$COMPLETED" -eq "$TOTAL_CONNECTORS" ]; then
               echo "All connectors have created PRs!"
               break
             fi
 
-            # Wait before next check
             sleep $CHECK_INTERVAL
             ELAPSED=$((ELAPSED + CHECK_INTERVAL))
           done
 
           if [ $ELAPSED -ge $MAX_WAIT ]; then
-            echo "Timeout reached. Proceeding with available data..."
-            echo "Completed: $COMPLETED/$TOTAL_CONNECTORS"
+            echo "Timeout reached after $((INITIAL_WAIT + MAX_WAIT)) total seconds."
+            echo "Proceeding with available data..."
           else
-            echo "All connectors completed in ${ELAPSED} seconds"
-            # Wait an additional 30 seconds to ensure PRs are fully created
+            echo "All connectors completed!"
             echo "Waiting additional 30 seconds for PR metadata to stabilize..."
             sleep 30
           fi
@@ -332,21 +346,22 @@ jobs:
           while IFS='|' read -r REPO SPEC VERSION; do
             echo "Checking repository: $REPO"
 
-            # Get the most recent PR from this repository (created in last 2 hours to account for processing time)
-            SINCE_TIME=$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)
-
+            # Get the most recent auto-generated PR (look for PRs with "Auto-generated connector" in title)
             PR_DATA=$(gh pr list \
               --repo "$REPO" \
               --state all \
               --limit 10 \
               --json number,title,url,state,createdAt \
-              --jq "[.[] | select(.createdAt > \"$SINCE_TIME\")]  | .[0]" 2>/dev/null || echo "null")
+              --jq '[.[] | select(.title | contains("Auto-generated connector"))] | sort_by(.createdAt) | reverse | .[0]' 2>/dev/null || echo "null")
 
-            if [ -n "$PR_DATA" ] && [ "$PR_DATA" != "null" ]; then
-              echo "Found recent PR for $REPO"
+            if [ -n "$PR_DATA" ] && [ "$PR_DATA" != "null" ] && [ "$PR_DATA" != "{}" ]; then
+              echo "Found auto-generated PR for $REPO"
 
               # Extract change type from PR title if available
-              CHANGE_TYPE=$(echo "$PR_DATA" | jq -r '.title' | grep -oP '\[(MAJOR|MINOR|PATCH)\]' || echo "[UNKNOWN]")
+              CHANGE_TYPE=$(echo "$PR_DATA" | jq -r '.title' | grep -oE '\[(MAJOR|MINOR|PATCH)\]' | head -1 || echo "[UNKNOWN]")
+              if [ -z "$CHANGE_TYPE" ]; then
+                CHANGE_TYPE="[UNKNOWN]"
+              fi
 
               # Check for build failure in title
               BUILD_STATUS="Success"
@@ -376,7 +391,7 @@ jobs:
 
               echo "Added PR info for $REPO"
             else
-              echo "No recent PR found for $REPO - may still be processing"
+              echo "No auto-generated PR found for $REPO - may still be processing"
 
               # Add placeholder entry for connectors still processing
               CONNECTOR_INFO=$(jq -n \
@@ -413,8 +428,21 @@ jobs:
           echo "email_date=${CURRENT_DATETIME}" >> $GITHUB_OUTPUT
           echo "total_connectors=${TOTAL_CONNECTORS}" >> $GITHUB_OUTPUT
 
-      - name: Send consolidated daily email
+      - name: Check email secrets
         if: env.CONNECTORS_TRIGGERED == 'true'
+        id: check_email_secrets
+        run: |
+          if [ -z "${{ secrets.GMAIL_USERNAME }}" ] || [ -z "${{ secrets.GMAIL_APP_PASSWORD }}" ]; then
+            echo "WARNING: Email secrets (GMAIL_USERNAME or GMAIL_APP_PASSWORD) are not configured"
+            echo "Please add these secrets to the repository to enable email notifications"
+            echo "email_configured=false" >> $GITHUB_OUTPUT
+          else
+            echo "Email secrets are configured"
+            echo "email_configured=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send consolidated daily email
+        if: env.CONNECTORS_TRIGGERED == 'true' && steps.check_email_secrets.outputs.email_configured == 'true'
         continue-on-error: true
         id: send_email
         uses: dawidd6/action-send-mail@v3
