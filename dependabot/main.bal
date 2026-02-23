@@ -23,7 +23,6 @@ import ballerina/http;
 import ballerina/io;
 import ballerina/lang.regexp;
 import ballerina/os;
-import ballerina/time;
 
 // Logging utility function for structured output
 isolated function print(string message, string level, int indentation) {
@@ -429,46 +428,6 @@ function createMetadataFile(Repository repo, string version, string dirPath) ret
     return;
 }
 
-// Get current repository info from git
-function getCurrentRepo() returns [string, string]|error {
-    string? githubRepo = os:getEnv("GITHUB_REPOSITORY");
-    if githubRepo is string {
-        string[] parts = regexp:split(re `/`, githubRepo);
-        if parts.length() == 2 {
-            return [parts[0], parts[1]];
-        }
-    }
-    return error("Could not determine repository from GITHUB_REPOSITORY env var");
-}
-
-// Create Pull Request
-function createPullRequest(github:Client githubClient, string owner, string repo,
-        string branchName, string baseBranch, string title,
-        string body) returns string|error {
-
-    print("Creating Pull Request...", "Info", 0);
-
-    github:PullRequest pr = check githubClient->/repos/[owner]/[repo]/pulls.post({
-        title: title,
-        body: body,
-        head: branchName,
-        base: baseBranch
-    });
-
-    string prUrl = pr.html_url;
-    print("Pull Request created successfully!", "Info", 0);
-    print(string `PR URL: ${prUrl}`, "Info", 0);
-
-    // Add labels to the PR
-    int prNumber = pr.number;
-    _ = check githubClient->/repos/[owner]/[repo]/issues/[prNumber]/labels.post({
-        labels: ["openapi-update", "automated", "dependencies"]
-    });
-    print("Added labels to PR", "Info", 0);
-
-    return prUrl;
-}
-
 // Helper: Extract API version from spec or fallback to tag name
 function getApiVersion(string specContent, string tagName) returns string {
     string|error apiVersionResult = extractApiVersion(specContent);
@@ -869,6 +828,18 @@ function processRolloutBasedRepo(github:Client githubClient, Repository repo, st
     }
 }
 
+// Write repos.json with proper formatting (4 space indentation)
+function writeReposJsonFormatted(Repository[] repos) returns error? {
+    json reposJson = repos.toJson();
+
+    // Convert to pretty-printed JSON string with 4-space indentation
+    string formattedJson = reposJson.toJsonString();
+
+    // Write to file
+    check io:fileWriteString("../repos.json", formattedJson);
+    return;
+}
+
 // Main monitoring function
 public function main() returns error? {
     print("=== Dependabot OpenAPI Monitor ===", "Info", 0);
@@ -947,8 +918,12 @@ public function main() returns error? {
             updateSummary.push(summary);
         }
 
-        // Update repos.json
-        check io:fileWriteJson("../repos.json", repos.toJson());
+        // Update repos.json with proper formatting
+        error? writeResult = writeReposJsonFormatted(repos);
+        if writeResult is error {
+            print("Failed to write repos.json: " + writeResult.message(), "Error", 0);
+            return writeResult;
+        }
         io:println("");
         print("Updated repos.json with new versions and content hashes", "Info", 0);
 
@@ -956,80 +931,8 @@ public function main() returns error? {
         string summaryContent = string:'join("\n", ...updateSummary);
         check io:fileWriteString("../UPDATE_SUMMARY.txt", summaryContent);
 
-        // Get current date for branch name
-        time:Utc currentTime = time:utcNow();
-        string timestamp = string `${time:utcToString(currentTime).substring(0, 10)}-${currentTime[0]}`;
-        string branchName = string `openapi-update-${timestamp}`;
-
-        // Get repository info
-        [string, string]|error repoInfo = getCurrentRepo();
-        if repoInfo is error {
-            print("Could not create PR automatically. Changes are ready in working directory.", "Warn", 0);
-            print("Please create a PR manually with the following branch name:", "Info", 0);
-            print(branchName, "Info", 1);
-            return;
-        }
-
-        string owner = repoInfo[0];
-        string repoName = repoInfo[1];
-
-        // Create PR title and body
-        time:Civil civil = time:utcToCivil(currentTime);
-        string prTitle = string `Update OpenAPI Specifications - ${civil.year}-${civil.month}-${civil.day}`;
-
-        // Build Changes section for PR body
-        string changesContent = "";
-        foreach var u in updates {
-            changesContent = changesContent + string `- ${u.repo.vendor}/${u.repo.api}: ${u.oldVersion} -> ${u.newVersion} (${u.updateType} update)\n`;
-        }
-
-        // Build Files Changed section
-        string filesChangedContent = "";
-        foreach var u in updates {
-            string updateTypeLabel = u.updateType == "both" ? "version + content" : u.updateType;
-            filesChangedContent = filesChangedContent + "- `" + u.localPath + "` (" + updateTypeLabel + " update)\n";
-        }
-
-        string prBody = "## OpenAPI Specification Updates\n\n" +
-            "This PR contains automated updates to OpenAPI specifications detected by the Dependabot monitor.\n\n" +
-            "### Changes:\n" + changesContent + "\n" +
-            "### Files Changed:\n" + filesChangedContent + "\n" +
-            "### Update Types:\n" +
-            "- Version update: New API version/rollout released (creates new directory)\n" +
-            "- Content update: Changes within same version/rollout (replaces existing files)\n" +
-            "- Both: Version change + content modifications\n\n" +
-            "### Important Notes:\n" +
-            "- Content-only updates replace files in existing directories to maintain single source of truth\n" +
-            "- Version/rollout changes create new directories to preserve history\n" +
-            "- All changes are tracked via SHA-256 content hashing\n" +
-            "- **Rollout-based strategy**: Uses actual API version (e.g., v4) as folder name, replaces spec files on new rollouts\n\n" +
-            "### Checklist:\n" +
-            "- [ ] Review specification changes\n" +
-            "- [ ] Verify connector generation works\n" +
-            "- [ ] Run tests\n" +
-            "- [ ] Update documentation if needed\n\n" +
-            "---\n" +
-            "This PR was automatically generated by the OpenAPI Dependabot";
-
-        // Create the PR
-        string|error prUrl = createPullRequest(
-                githubClient,
-                owner,
-                repoName,
-                branchName,
-                "main",
-                prTitle,
-                prBody
-        );
-
-        if prUrl is string {
-            io:println("");
-            print("Done! Review the PR at: " + prUrl, "Info", 0);
-        } else {
-            io:println("");
-            print("PR creation failed: " + prUrl.message(), "Error", 0);
-            print("Changes are committed. Please create PR manually.", "Info", 0);
-        }
+        io:println("");
+        print("Changes detected and saved. The workflow will create a PR automatically.", "Info", 0);
 
     } else {
         print("All specifications are up-to-date!", "Info", 0);
