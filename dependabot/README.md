@@ -77,14 +77,14 @@ This system automatically:
 
 ## Components
 
-### 1. Dependabot Monitor (`monitor.bal`)
+### 1. Dependabot Monitor (`main.bal`)
 
-**Location:** `dependabot/monitor.bal`
+**Location:** `dependabot/main.bal`
 
 **Purpose:** Core monitoring script that checks vendor repositories for OpenAPI specification updates.
 
 **Key Features:**
-- Supports three versioning strategies (release-tag, file-based, rollout-based)
+- Supports multiple versioning strategies (release-tag, file-based)
 - Downloads specs and calculates content hashes
 - Maintains version history in `repos.json`
 - Creates structured output for downstream workflows
@@ -120,7 +120,7 @@ This system automatically:
 
 ### 3. Sorting Scripts
 
-**Location:** `dependabot/scripts/`
+**Location:** `each connector repo/scripts/`
 
 #### `sort_ballerina_client.bal`
 Sorts resource methods in `client.bal` files by path and HTTP method while preserving all comments, whitespace, and non-method content.
