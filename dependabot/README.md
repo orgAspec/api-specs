@@ -555,10 +555,6 @@ api-specs/
 │   ├── Ballerina.toml
 │   ├── Dependencies.toml
 │   ├── README.md (this file)
-│   └── scripts/
-│       ├── sort_ballerina_client.bal
-│       ├── sort_ballerina_types.bal
-│       └── analyze_version_change.bal
 ├── openapi/
 │   └── {vendor}/
 │       └── {api}/
@@ -578,6 +574,10 @@ connector-repo/
 │   ├── types.bal (generated)
 │   ├── Ballerina.toml (generated)
 │   └── Dependencies.toml (generated)
+│── scripts/
+│    ├── sort_ballerina_client.bal
+│    ├── sort_ballerina_types.bal
+│    └── analyze_version_change.bal
 ├── gradle.properties
 └── build.gradle
 ```
