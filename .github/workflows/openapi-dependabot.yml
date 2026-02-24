@@ -416,25 +416,26 @@ jobs:
           echo "Collected information for $(cat connector_prs.json | jq 'length') connectors:"
           cat connector_prs.json | jq '.'
 
-      - name: Generate email HTML table
+      - name: Generate email HTML content
         if: env.CONNECTORS_TRIGGERED == 'true'
-        id: generate_email_table
+        id: generate_email
         run: |
           # Generate HTML table rows from connector_prs.json
-          cat connector_prs.json | jq -r '.[] |
+          TABLE_ROWS=$(cat connector_prs.json | jq -r '.[] |
             "<tr>" +
             "<td>" + .repository + "</td>" +
             "<td><code>" + .specification + "</code></td>" +
             "<td><code>" + .version + "</code></td>" +
             "<td><span class=\"change-" + (.changeType | gsub("[\\[\\]]"; "") | ascii_downcase) + "\">" + .changeType + "</span></td>" +
-            "<td>" + (if .buildStatus == "FAILED" then "<span class=\"status-failed\">FAILED</span>" elif .buildStatus == "In Progress" then "In Progress" else "<span class=\"status-success\">Success</span>" end) + "</td>" +
-            "<td>" + (if .pr.number > 0 then "<a href=\"" + .pr.url + "\" class=\"pr-link\">#" + (.pr.number | tostring) + "</a>" else "Pending" end) + "</td>" +
+            "<td>" + (if .buildStatus == "FAILED" then "<span class=\"status-failed\">❌ FAILED</span>" elif .buildStatus == "In Progress" then "⏳ In Progress" else "<span class=\"status-success\">✅ Success</span>" end) + "</td>" +
+            "<td>" + (if .pr.number > 0 then "<a href=\"" + .pr.url + "\">#" + (.pr.number | tostring) + "</a>" else "Pending" end) + "</td>" +
             "</tr>"
-          ' > email_table_rows.html
+          ')
 
-          echo "Generated HTML table rows"
+          echo "$TABLE_ROWS" > email_table_rows.html
+          echo "Generated HTML table rows:"
+          cat email_table_rows.html
 
-          # Prepare other email variables
           CURRENT_DATE=$(date +%Y-%m-%d)
           CURRENT_DATETIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
           TOTAL_CONNECTORS=$(cat connector_prs.json | jq 'length')
@@ -442,6 +443,68 @@ jobs:
           echo "email_subject=Daily Connector Updates Summary - ${CURRENT_DATE}" >> $GITHUB_OUTPUT
           echo "email_date=${CURRENT_DATETIME}" >> $GITHUB_OUTPUT
           echo "total_connectors=${TOTAL_CONNECTORS}" >> $GITHUB_OUTPUT
+
+          # Generate complete HTML email using heredoc with variable expansion
+          cat > email_body.html <<EOF
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #24292e; max-width: 1200px; margin: 0 auto; padding: 20px; }
+              .header { border-bottom: 3px solid #0366d6; padding-bottom: 20px; margin-bottom: 30px; }
+              .header h1 { margin: 0; color: #0366d6; font-size: 24px; }
+              .header .date { color: #586069; font-size: 14px; margin-top: 5px; }
+              table { width: 100%; border-collapse: collapse; margin: 20px 0; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+              th { background: #f6f8fa; border: 1px solid #d1d5da; padding: 12px; text-align: left; font-weight: 600; color: #24292e; font-size: 14px; }
+              td { border: 1px solid #d1d5da; padding: 12px; font-size: 13px; }
+              tr:hover { background: #f6f8fa; }
+              .status-success { color: #28a745; font-weight: 600; }
+              .status-failed { color: #d73a49; font-weight: 600; }
+              .change-major { background: #d73a49; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+              .change-minor { background: #0366d6; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+              .change-patch { background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+              .change-processing, .change-unknown { background: #6c757d; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+              a { color: #0366d6; text-decoration: none; }
+              a:hover { text-decoration: underline; }
+              .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #d1d5da; color: #586069; font-size: 12px; }
+              .summary-box { background: #f6f8fa; border: 1px solid #d1d5da; border-radius: 6px; padding: 15px; margin: 20px 0; }
+              .summary-box h3 { margin: 0 0 10px 0; font-size: 16px; }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              <h1>📦 Daily Connector Updates Summary</h1>
+              <div class="date">Generated: ${CURRENT_DATETIME}</div>
+            </div>
+            <div class="summary-box">
+              <h3>Summary</h3>
+              <p>Total connectors updated: <strong>${TOTAL_CONNECTORS}</strong></p>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Connector Repository</th>
+                  <th>Specification</th>
+                  <th>Version</th>
+                  <th>Change Type</th>
+                  <th>Build Status</th>
+                  <th>Pull Request</th>
+                </tr>
+              </thead>
+              <tbody>
+          ${TABLE_ROWS}
+              </tbody>
+            </table>
+            <div class="footer">
+              <p>This is an automated message from the OpenAPI Dependabot system.</p>
+              <p>For questions or issues, please contact the Ballerina team.</p>
+            </div>
+          </body>
+          </html>
+          EOF
+
+          echo "Generated complete email body"
+          cat email_body.html
 
       - name: Check email secrets
         if: env.CONNECTORS_TRIGGERED == 'true'
@@ -467,179 +530,10 @@ jobs:
           secure: true
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          subject: ${{ steps.generate_email_table.outputs.email_subject }}
+          subject: ${{ steps.generate_email.outputs.email_subject }}
           to: t37714687@gmail.com
           from: ${{ secrets.GMAIL_USERNAME }}
-          body: |
-            Daily Connector Updates Summary
-            Generated: ${{ steps.generate_email_table.outputs.email_date }}
-
-            This email contains a summary of all connector version updates processed today.
-
-            See the HTML version below for a detailed table view.
-
-            ---
-            This is an automated message from the OpenAPI Dependabot system.
-          html_body: |
-            <!DOCTYPE html>
-            <html>
-            <head>
-              <style>
-                body {
-                  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-                  line-height: 1.6;
-                  color: #24292e;
-                  max-width: 1200px;
-                  margin: 0 auto;
-                  padding: 20px;
-                }
-                .header {
-                  border-bottom: 3px solid #0366d6;
-                  padding-bottom: 20px;
-                  margin-bottom: 30px;
-                }
-                .header h1 {
-                  margin: 0;
-                  color: #0366d6;
-                  font-size: 24px;
-                }
-                .header .date {
-                  color: #586069;
-                  font-size: 14px;
-                  margin-top: 5px;
-                }
-                table {
-                  width: 100%;
-                  border-collapse: collapse;
-                  margin: 20px 0;
-                  background: white;
-                  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-                }
-                th {
-                  background: #f6f8fa;
-                  border: 1px solid #d1d5da;
-                  padding: 12px;
-                  text-align: left;
-                  font-weight: 600;
-                  color: #24292e;
-                  font-size: 14px;
-                }
-                td {
-                  border: 1px solid #d1d5da;
-                  padding: 12px;
-                  font-size: 13px;
-                }
-                tr:hover {
-                  background: #f6f8fa;
-                }
-                .status-success {
-                  color: #28a745;
-                  font-weight: 600;
-                }
-                .status-failed {
-                  color: #d73a49;
-                  font-weight: 600;
-                }
-                .change-major {
-                  background: #d73a49;
-                  color: white;
-                  padding: 2px 8px;
-                  border-radius: 3px;
-                  font-size: 11px;
-                  font-weight: 600;
-                }
-                .change-minor {
-                  background: #0366d6;
-                  color: white;
-                  padding: 2px 8px;
-                  border-radius: 3px;
-                  font-size: 11px;
-                  font-weight: 600;
-                }
-                .change-patch {
-                  background: #28a745;
-                  color: white;
-                  padding: 2px 8px;
-                  border-radius: 3px;
-                  font-size: 11px;
-                  font-weight: 600;
-                }
-                .change-processing {
-                  background: #6c757d;
-                  color: white;
-                  padding: 2px 8px;
-                  border-radius: 3px;
-                  font-size: 11px;
-                  font-weight: 600;
-                }
-                .change-unknown {
-                  background: #6c757d;
-                  color: white;
-                  padding: 2px 8px;
-                  border-radius: 3px;
-                  font-size: 11px;
-                  font-weight: 600;
-                }
-                .pr-link {
-                  color: #0366d6;
-                  text-decoration: none;
-                }
-                .pr-link:hover {
-                  text-decoration: underline;
-                }
-                .footer {
-                  margin-top: 40px;
-                  padding-top: 20px;
-                  border-top: 1px solid #d1d5da;
-                  color: #586069;
-                  font-size: 12px;
-                }
-                .summary-box {
-                  background: #f6f8fa;
-                  border: 1px solid #d1d5da;
-                  border-radius: 6px;
-                  padding: 15px;
-                  margin: 20px 0;
-                }
-                .summary-box h3 {
-                  margin: 0 0 10px 0;
-                  font-size: 16px;
-                }
-              </style>
-            </head>
-            <body>
-              <div class="header">
-                <h1>Daily Connector Updates Summary</h1>
-                <div class="date">Generated: ${{ steps.generate_email_table.outputs.email_date }}</div>
-              </div>
-
-              <div class="summary-box">
-                <h3>Summary</h3>
-                <p>Total connectors updated: <strong>${{ steps.generate_email_table.outputs.total_connectors }}</strong></p>
-              </div>
-
-              <table>
-                <thead>
-                  <tr>
-                    <th>Connector Repository</th>
-                    <th>Specification</th>
-                    <th>Version</th>
-                    <th>Change Type</th>
-                    <th>Build Status</th>
-                    <th>Pull Request</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  $(cat email_table_rows.html)
-                </tbody>
-              </table>
-
-              <div class="footer">
-                <p>This is an automated message from the OpenAPI Dependabot system.</p>
-                <p>For questions or issues, please contact the Ballerina team.</p>
-              </div>
-            </body>
-            </html>
+          html_body: file://email_body.html
 
       - name: Log email status
         if: env.CONNECTORS_TRIGGERED == 'true'
@@ -648,7 +542,7 @@ jobs:
             echo "Email sent successfully to t37714687@gmail.com"
           else
             echo "WARNING: Email sending failed. Check GMAIL_USERNAME and GMAIL_APP_PASSWORD secrets."
-            echo "Email subject would have been: ${{ steps.generate_email_table.outputs.email_subject }}"
+            echo "Email subject would have been: ${{ steps.generate_email.outputs.email_subject }}"
             echo "Connector data is still available in connector_prs.json artifact"
           fi
 
@@ -661,6 +555,7 @@ jobs:
             connector_prs.json
             triggered_connectors.txt
             email_table_rows.html
+            email_body.html
 
       - name: Notify on failure
         if: failure() && env.UPDATES_FOUND == 'true'
