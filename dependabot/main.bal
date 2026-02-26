@@ -362,6 +362,8 @@ function downloadSpecFromBranch(string owner, string repo, string branch, string
 
     string baseUrl = string `https://raw.githubusercontent.com`;
     string path = string `/${owner}/${repo}/${branch}/${specPath}`;
+    // file search -> yml + json + prefix
+    // fetch the file  -> file finder
 
     // Download the file
     http:Client httpClient = check new (baseUrl);
