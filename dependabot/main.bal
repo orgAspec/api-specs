@@ -769,9 +769,24 @@ public function main() returns error? {
 
         string[] updateSummary = [];
         foreach UpdateResult update in updates {
-            string summary = string `${update.identifier}:${update.apiVersion}`;
+            // FIXED: Split identifier into vendor/api parts
+            // identifier format is "vendor.api" (e.g., "hubspot.crm.associations")
+            // We need to convert it to "vendor/api:version" format
+            string[] identifierParts = regexp:split(re `\.`, update.identifier);
+
+            string summaryLine = "";
+            if identifierParts.length() >= 2 {
+                // Format: vendor/api:version (e.g., hubspot/crm.associations:v4)
+                string vendor = identifierParts[0];
+                string api = string:'join(".", ...identifierParts.slice(1));
+                summaryLine = string `${vendor}/${api}:${update.apiVersion}`;
+            } else {
+                // Fallback to original format if parsing fails
+                summaryLine = string `${update.identifier}:${update.apiVersion}`;
+            }
+
             print(string `${update.identifier}: ${update.oldVersion} -> ${update.newVersion} (${update.updateType} update)`, "Info", 1);
-            updateSummary.push(summary);
+            updateSummary.push(summaryLine);
         }
 
         // Update repos.json
