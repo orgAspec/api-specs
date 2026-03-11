@@ -58,6 +58,20 @@ dependencies = [
 	{org = "ballerina", name = "jballerina.java"},
 	{org = "ballerina", name = "lang.object"}
 ]
+modules = [
+	{org = "ballerina", packageName = "data.jsondata", moduleName = "data.jsondata"}
+]
+
+[[package]]
+org = "ballerina"
+name = "data.yaml"
+version = "0.8.0"
+dependencies = [
+	{org = "ballerina", name = "jballerina.java"}
+]
+modules = [
+	{org = "ballerina", packageName = "data.yaml", moduleName = "data.yaml"}
+]
 
 [[package]]
 org = "ballerina"
@@ -218,7 +232,7 @@ dependencies = [
 [[package]]
 org = "ballerina"
 name = "log"
-version = "2.16.1"
+version = "2.17.0"
 dependencies = [
 	{org = "ballerina", name = "io"},
 	{org = "ballerina", name = "jballerina.java"},
@@ -287,9 +301,6 @@ version = "2.8.0"
 dependencies = [
 	{org = "ballerina", name = "jballerina.java"}
 ]
-modules = [
-	{org = "ballerina", packageName = "time", moduleName = "time"}
-]
 
 [[package]]
 org = "ballerina"
@@ -330,12 +341,13 @@ name = "openapi_dependabot"
 version = "0.1.0"
 dependencies = [
 	{org = "ballerina", name = "crypto"},
+	{org = "ballerina", name = "data.jsondata"},
+	{org = "ballerina", name = "data.yaml"},
 	{org = "ballerina", name = "file"},
 	{org = "ballerina", name = "http"},
 	{org = "ballerina", name = "io"},
 	{org = "ballerina", name = "lang.regexp"},
 	{org = "ballerina", name = "os"},
-	{org = "ballerina", name = "time"},
 	{org = "ballerinax", name = "github"}
 ]
 modules = [
