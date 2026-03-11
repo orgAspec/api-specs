@@ -60,7 +60,8 @@ jobs:
           VALIDATION_PASSED=true
           VALIDATION_ERRORS=""
 
-          OPENAPI_FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files -q '.files[].path' | grep -E 'openapi\.(json|yaml)$' || true)
+          # Get only added or modified files, not deleted ones
+          OPENAPI_FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files -q '.files[] | select(.additions > 0 or .changes > 0) | .path' | grep -E 'openapi\.(json|yaml)$' || true)
 
           if [ -z "$OPENAPI_FILES" ]; then
             echo "No OpenAPI files found in this PR"
@@ -68,7 +69,7 @@ jobs:
             exit 0
           fi
 
-          echo "Found OpenAPI files:"
+          echo "Found OpenAPI files to validate:"
           echo "$OPENAPI_FILES"
 
           while IFS= read -r file; do
