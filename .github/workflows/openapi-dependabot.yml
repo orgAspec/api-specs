@@ -97,8 +97,7 @@ jobs:
 
           ### Structure:
           All specifications follow the standard structure:
-          - openapi/{vendor}/{api}/{version}/openapi.yaml
-          - openapi/{vendor}/{api}/{version}/.metadata.json
+          - openapi/{vendor}/{api}/{version}/openapi.{json|yaml}
 
           ### Checklist:
           - Review specification changes

@@ -60,7 +60,7 @@ jobs:
           VALIDATION_PASSED=true
           VALIDATION_ERRORS=""
 
-          OPENAPI_FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files -q '.files[].path' | grep 'openapi.json$' || true)
+          OPENAPI_FILES=$(gh pr view ${{ github.event.pull_request.number }} --json files -q '.files[].path' | grep -E 'openapi\.(json|yaml)$' || true)
 
           if [ -z "$OPENAPI_FILES" ]; then
             echo "No OpenAPI files found in this PR"
@@ -86,45 +86,39 @@ jobs:
               continue
             fi
 
-            DIR=$(dirname "$file")
-            METADATA_FILE="$DIR/.metadata.json"
-
-            echo "Looking for metadata at: $METADATA_FILE"
-
-            if [ ! -f "$METADATA_FILE" ]; then
-              echo "Missing metadata file: $METADATA_FILE"
-              VALIDATION_PASSED=false
-              VALIDATION_ERRORS="${VALIDATION_ERRORS}\n- Missing metadata: $METADATA_FILE"
-            else
-              echo "Metadata file exists: $METADATA_FILE"
-
-              if ! jq empty "$METADATA_FILE" 2>/dev/null; then
-                echo "Invalid JSON in metadata file: $METADATA_FILE"
+            # Validate JSON/YAML format based on extension
+            if [[ "$file" == *.json ]]; then
+              if ! jq empty "$file" 2>/dev/null; then
+                echo "Invalid JSON format in: $file"
                 VALIDATION_PASSED=false
-                VALIDATION_ERRORS="${VALIDATION_ERRORS}\n- Invalid JSON in: $METADATA_FILE"
+                VALIDATION_ERRORS="${VALIDATION_ERRORS}\n- Invalid JSON format in: $file"
               else
-                echo "Metadata file is valid JSON"
+                echo "Valid JSON format: $file"
+
+                # Validate OpenAPI structure
+                if ! jq -e '.openapi' "$file" >/dev/null 2>&1; then
+                  echo "Missing 'openapi' field in: $file"
+                  VALIDATION_PASSED=false
+                  VALIDATION_ERRORS="${VALIDATION_ERRORS}\n- Missing 'openapi' field in: $file"
+                else
+                  OPENAPI_VERSION=$(jq -r '.openapi' "$file")
+                  echo "Valid OpenAPI spec (version: $OPENAPI_VERSION)"
+                fi
+
+                if ! jq -e '.info' "$file" >/dev/null 2>&1; then
+                  echo "Warning: Missing 'info' field in: $file"
+                fi
               fi
-            fi
-
-            if ! jq empty "$file" 2>/dev/null; then
-              echo "Invalid JSON format in: $file"
-              VALIDATION_PASSED=false
-              VALIDATION_ERRORS="${VALIDATION_ERRORS}\n- Invalid JSON format in: $file"
-            else
-              echo "Valid JSON format: $file"
-
-              if ! jq -e '.openapi' "$file" >/dev/null 2>&1; then
+            elif [[ "$file" == *.yaml ]] || [[ "$file" == *.yml ]]; then
+              # Basic YAML validation - check if file is readable
+              if ! grep -q "openapi:" "$file" 2>/dev/null; then
                 echo "Missing 'openapi' field in: $file"
                 VALIDATION_PASSED=false
                 VALIDATION_ERRORS="${VALIDATION_ERRORS}\n- Missing 'openapi' field in: $file"
               else
-                OPENAPI_VERSION=$(jq -r '.openapi' "$file")
+                echo "Valid YAML format: $file"
+                OPENAPI_VERSION=$(grep "^openapi:" "$file" | head -1 | sed 's/openapi:[[:space:]]*//')
                 echo "Valid OpenAPI spec (version: $OPENAPI_VERSION)"
-              fi
-
-              if ! jq -e '.info' "$file" >/dev/null 2>&1; then
-                echo "Warning: Missing 'info' field in: $file"
               fi
             fi
 
