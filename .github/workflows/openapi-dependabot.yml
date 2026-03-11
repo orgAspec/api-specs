@@ -71,7 +71,18 @@ jobs:
           BRANCH_NAME="openapi-update-${TIMESTAMP}"
           echo "Creating branch: ${BRANCH_NAME}"
           git checkout -b "${BRANCH_NAME}"
-          git add openapi/ repos.json UPDATE_SUMMARY.txt
+
+          # Debug: Show what files changed
+          echo "Git status before add:"
+          git status
+
+          # Add all changes recursively
+          git add -A openapi/ repos.json UPDATE_SUMMARY.txt
+
+          # Debug: Show what's staged
+          echo "Git status after add:"
+          git status
+
           if git diff --staged --quiet; then
             echo "No changes to commit"
             exit 0
@@ -193,10 +204,14 @@ jobs:
 
               echo "Detected update for: $VENDOR/$API (version: $VERSION_DIR)"
 
-              CONNECTOR_REPO=$(jq -r ".[] | select(.vendor==\"$VENDOR\" and .api==\"$API\") | .connectorRepo" repos.json)
+              # Reconstruct identifier from vendor/api (e.g., hubspot/crm.associations -> hubspot.crm.associations)
+              IDENTIFIER="${VENDOR}.${API}"
+              echo "Looking for identifier: $IDENTIFIER"
+
+              CONNECTOR_REPO=$(jq -r ".specMetadata[] | select(.identifier==\"$IDENTIFIER\") | .connectorRepo" repos.json)
 
               if [ -z "$CONNECTOR_REPO" ] || [ "$CONNECTOR_REPO" = "null" ]; then
-                echo "No connector repository configured for $VENDOR/$API in repos.json"
+                echo "No connector repository configured for $IDENTIFIER in repos.json"
                 continue
               fi
 
