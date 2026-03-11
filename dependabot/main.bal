@@ -504,7 +504,19 @@ function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, strin
 
     print(string `API Version: ${apiVersion}`, "Info", 1);
 
-    string versionDir = "../openapi/" + spec.identifier + "/" + apiVersion;
+    // Convert identifier from dot notation to directory path
+    // Example: "hubspot.crm.associations" -> "hubspot/crm.associations"
+    string[] identifierParts = regexp:split(re `\.`, spec.identifier);
+    string directoryPath = "";
+    if identifierParts.length() >= 2 {
+        string vendor = identifierParts[0];
+        string api = string:'join(".", ...identifierParts.slice(1));
+        directoryPath = vendor + "/" + api;
+    } else {
+        directoryPath = spec.identifier;
+    }
+
+    string versionDir = "../openapi/" + directoryPath + "/" + apiVersion;
 
     // For release-tag strategy: only update if BOTH version AND content hash changed
     if !versionChanged || !contentChanged {
@@ -514,6 +526,21 @@ function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, strin
 
     string fileExtension = getFileExtension(specContent);
     string localPath = versionDir + "/openapi." + fileExtension;
+
+    // Remove existing spec files if any (to replace with latest)
+    if check file:test(versionDir, file:EXISTS) {
+        string jsonPath = versionDir + "/openapi.json";
+        string yamlPath = versionDir + "/openapi.yaml";
+
+        if check file:test(jsonPath, file:EXISTS) {
+            check file:remove(jsonPath);
+            print("Removed existing openapi.json", "Info", 2);
+        }
+        if check file:test(yamlPath, file:EXISTS) {
+            check file:remove(yamlPath);
+            print("Removed existing openapi.yaml", "Info", 2);
+        }
+    }
 
     error? saveResult = saveSpec(specContent, localPath);
     if saveResult is error {
@@ -525,7 +552,7 @@ function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, strin
     spec.lastVersion = tagName;
     spec.lastContentHash = contentHash;
 
-    string folderPath = "openapi/" + spec.identifier + "/" + apiVersion;
+    string folderPath = "openapi/" + directoryPath + "/" + apiVersion;
 
     return {
         identifier: spec.identifier,
@@ -642,8 +669,20 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
     string updateType = "both";
     print(string `UPDATE DETECTED! (${spec.lastVersion} -> ${newVersion}, Type: ${updateType})`, "Info", 1);
 
-    // Structure: openapi/{identifier}/{apiVersion}/
-    string versionDir = "../openapi/" + spec.identifier + "/" + apiVersion;
+    // Convert identifier from dot notation to directory path
+    // Example: "hubspot.crm.associations" -> "hubspot/crm.associations"
+    string[] identifierParts = regexp:split(re `\.`, spec.identifier);
+    string directoryPath = "";
+    if identifierParts.length() >= 2 {
+        string vendor = identifierParts[0];
+        string api = string:'join(".", ...identifierParts.slice(1));
+        directoryPath = vendor + "/" + api;
+    } else {
+        directoryPath = spec.identifier;
+    }
+
+    // Structure: openapi/{vendor}/{api}/{apiVersion}/
+    string versionDir = "../openapi/" + directoryPath + "/" + apiVersion;
 
     // For file-based, we always update to latest (remove old if exists)
     string fileExtension = getFileExtension(specContent);
@@ -674,7 +713,7 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
     spec.lastVersion = newVersion;
     spec.lastContentHash = contentHash;
 
-    string folderPath = "openapi/" + spec.identifier + "/" + apiVersion;
+    string folderPath = "openapi/" + directoryPath + "/" + apiVersion;
 
     return {
         identifier: spec.identifier,
