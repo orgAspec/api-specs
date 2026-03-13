@@ -72,14 +72,11 @@ jobs:
           echo "Creating branch: ${BRANCH_NAME}"
           git checkout -b "${BRANCH_NAME}"
 
-          # Debug: Show what files changed
           echo "Git status before add:"
           git status
 
-          # Add all changes recursively
           git add -A openapi/ repos.json UPDATE_SUMMARY.txt
 
-          # Debug: Show what's staged
           echo "Git status after add:"
           git status
 
@@ -166,25 +163,19 @@ jobs:
             echo "MERGE_SUCCESSFUL=timeout" >> $GITHUB_ENV
           fi
 
-      - name: Trigger Connector Regeneration
+      - name: Prepare connector update payload
         if: env.UPDATES_FOUND == 'true' && (env.MERGE_SUCCESSFUL == 'true' || env.MERGE_SUCCESSFUL == 'timeout')
-        id: trigger_connectors
-        env:
-          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        id: prepare_payload
         run: |
-          echo "Triggering connector regeneration..."
+          echo "Preparing connector update payload from UPDATE_SUMMARY.txt..."
 
           if [ ! -f "UPDATE_SUMMARY.txt" ]; then
-            echo "UPDATE_SUMMARY.txt not found, skipping connector triggers"
-            exit 0
+            echo "UPDATE_SUMMARY.txt not found"
+            exit 1
           fi
 
-          echo "UPDATE_SUMMARY.txt contents:"
-          cat UPDATE_SUMMARY.txt
-          echo ""
-
-          # Initialize array to track triggered connectors
-          > triggered_connectors.txt
+          # Create JSON array of connector updates
+          echo "[]" > connector_updates.json
 
           while IFS= read -r line || [ -n "$line" ]; do
             if [ -z "$line" ]; then
@@ -197,383 +188,83 @@ jobs:
               SPEC_PATH="${BASH_REMATCH[1]}"
               VERSION_DIR="${BASH_REMATCH[2]}"
 
-              echo "Parsed - Spec: $SPEC_PATH, Version: $VERSION_DIR"
-
               VENDOR=$(echo "$SPEC_PATH" | cut -d'/' -f1)
               API=$(echo "$SPEC_PATH" | cut -d'/' -f2)
 
-              echo "Detected update for: $VENDOR/$API (version: $VERSION_DIR)"
-
-              # Reconstruct identifier from vendor/api (e.g., hubspot/crm.associations -> hubspot.crm.associations)
               IDENTIFIER="${VENDOR}.${API}"
-              echo "Looking for identifier: $IDENTIFIER"
-
               CONNECTOR_REPO=$(jq -r ".specMetadata[] | select(.identifier==\"$IDENTIFIER\") | .connectorRepo" repos.json)
 
               if [ -z "$CONNECTOR_REPO" ] || [ "$CONNECTOR_REPO" = "null" ]; then
-                echo "No connector repository configured for $IDENTIFIER in repos.json"
+                echo "No connector repository configured for $IDENTIFIER"
                 continue
               fi
 
-              echo "Found connector repository: $CONNECTOR_REPO"
-
+              # Construct spec URL
               SPEC_URL="https://raw.githubusercontent.com/orgAspec/api-specs/main/openapi/${VENDOR}/${API}/${VERSION_DIR}/openapi.json"
-              echo "Constructed spec URL: $SPEC_URL"
 
-              echo "Verifying spec URL accessibility..."
+              # Verify URL
               HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$SPEC_URL")
               if [ "$HTTP_CODE" != "200" ]; then
-                echo "WARNING: JSON spec returned HTTP $HTTP_CODE. Checking if YAML exists..."
                 SPEC_URL="https://raw.githubusercontent.com/orgAspec/api-specs/main/openapi/${VENDOR}/${API}/${VERSION_DIR}/openapi.yaml"
                 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$SPEC_URL")
                 if [ "$HTTP_CODE" != "200" ]; then
-                  echo "ERROR: Neither JSON nor YAML spec found at openapi/${VENDOR}/${API}/${VERSION_DIR}"
-                  echo "Skipping this connector..."
+                  echo "ERROR: Neither JSON nor YAML spec found"
                   continue
-                else
-                  echo "Found YAML spec instead (HTTP 200)"
                 fi
-              else
-                echo "Spec URL verified successfully (HTTP 200)"
               fi
 
-              echo "Sending repository_dispatch event to $CONNECTOR_REPO..."
+              # Add to JSON array
+              CONNECTOR_UPDATE=$(jq -n \
+                --arg repo "$CONNECTOR_REPO" \
+                --arg spec "$VENDOR/$API" \
+                --arg version "$VERSION_DIR" \
+                --arg url "$SPEC_URL" \
+                '{
+                  repository: $repo,
+                  specification: $spec,
+                  version: $version,
+                  openapi_url: $url
+                }')
 
-              if gh api \
-                repos/"$CONNECTOR_REPO"/dispatches \
-                -X POST \
-                -f event_type=openapi-update \
-                -f client_payload[sender]=orgAspec/api-specs \
-                -f client_payload[openapi_url]="$SPEC_URL" \
-                -f client_payload[spec_version]="$VERSION_DIR"; then
+              jq --argjson item "$CONNECTOR_UPDATE" '. += [$item]' connector_updates.json > tmp.json && mv tmp.json connector_updates.json
 
-                echo "Successfully triggered connector regeneration for $CONNECTOR_REPO"
-
-                # Record triggered connector for email
-                echo "${CONNECTOR_REPO}|${VENDOR}/${API}|${VERSION_DIR}" >> triggered_connectors.txt
-              else
-                echo "Failed to trigger connector regeneration for $CONNECTOR_REPO"
-              fi
-
-            else
-              echo "Line does not match expected format 'vendor/api:version', skipping"
+              echo "Added connector: $CONNECTOR_REPO"
             fi
           done < UPDATE_SUMMARY.txt
 
-          echo ""
-          echo "All connector regeneration triggers completed!"
-          echo "CONNECTORS_TRIGGERED=true" >> $GITHUB_ENV
+          CONNECTOR_COUNT=$(jq 'length' connector_updates.json)
+          echo "Prepared $CONNECTOR_COUNT connector updates"
+          cat connector_updates.json | jq '.'
 
-      - name: Wait for connector updates to complete
-        if: env.CONNECTORS_TRIGGERED == 'true'
+          echo "connector_count=$CONNECTOR_COUNT" >> $GITHUB_OUTPUT
+
+      - name: Trigger ballerina-library connector orchestration workflow
+        if: env.UPDATES_FOUND == 'true' && steps.prepare_payload.outputs.connector_count > 0
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
         run: |
-          echo "Waiting for connector updates to process..."
+          echo "Triggering ballerina-library connector orchestration workflow..."
 
-          if [ ! -f "triggered_connectors.txt" ]; then
-            echo "No triggered connectors file found"
-            exit 0
-          fi
+          CONNECTOR_UPDATES=$(cat connector_updates.json | jq -c '.')
 
-          TOTAL_CONNECTORS=$(wc -l < triggered_connectors.txt)
-          echo "Monitoring $TOTAL_CONNECTORS connector repositories..."
+          gh api \
+            repos/orgBBalLib/ballerina-library/dispatches \
+            -X POST \
+            -f event_type=orchestrate-connector-updates \
+            -f client_payload[sender]=orgAspec/api-specs \
+            -f client_payload[connectors]="$CONNECTOR_UPDATES" \
+            -f client_payload[trigger_time]="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-          # Connector generation takes ~10-12 min, version analysis takes ~2-3 min
-          # Wait at least 10 minutes before first check to allow workflows to complete
-          INITIAL_WAIT=600  # 10 minutes
-          echo "Waiting ${INITIAL_WAIT} seconds for connector generation workflows to start processing..."
-          sleep $INITIAL_WAIT
-
-          MAX_WAIT=1800  # 30 minutes maximum total wait (after initial wait)
-          CHECK_INTERVAL=60  # Check every 60 seconds
-          ELAPSED=0
-
-          # Store the start time for filtering PRs
-          START_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          echo "Will look for PRs created after workflow start..."
-
-          while [ $ELAPSED -lt $MAX_WAIT ]; do
-            COMPLETED=0
-
-            # Use a temp file to avoid subshell issues
-            > /tmp/completed_count.txt
-
-            while IFS='|' read -r REPO SPEC VERSION; do
-              # Look for PRs that contain "Auto-generated connector" in title (from analyze-version-change)
-              PR_INFO=$(gh pr list \
-                --repo "$REPO" \
-                --state open \
-                --limit 5 \
-                --json number,title,createdAt \
-                --jq '.[] | select(.title | contains("Auto-generated connector"))' 2>/dev/null || echo "")
-
-              if [ -n "$PR_INFO" ]; then
-                echo "1" >> /tmp/completed_count.txt
-                echo "  $REPO - PR found"
-              else
-                echo "  $REPO - Waiting..."
-              fi
-            done < triggered_connectors.txt
-
-            COMPLETED=$(wc -l < /tmp/completed_count.txt)
-
-            echo ""
-            echo "Progress: $COMPLETED/$TOTAL_CONNECTORS connectors have created PRs (${ELAPSED}s after initial wait)"
-
-            if [ "$COMPLETED" -eq "$TOTAL_CONNECTORS" ]; then
-              echo "All connectors have created PRs!"
-              break
-            fi
-
-            sleep $CHECK_INTERVAL
-            ELAPSED=$((ELAPSED + CHECK_INTERVAL))
-          done
-
-          if [ $ELAPSED -ge $MAX_WAIT ]; then
-            echo "Timeout reached after $((INITIAL_WAIT + MAX_WAIT)) total seconds."
-            echo "Proceeding with available data..."
-          else
-            echo "All connectors completed!"
-            echo "Waiting additional 30 seconds for PR metadata to stabilize..."
-            sleep 30
-          fi
-
-          echo "Proceeding to email generation"
-
-      - name: Collect all connector PR information
-        if: env.CONNECTORS_TRIGGERED == 'true'
-        id: collect_prs
-        env:
-          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
-        run: |
-          echo "Collecting PR information from all triggered connectors..."
-
-          if [ ! -f "triggered_connectors.txt" ]; then
-            echo "No triggered connectors file found"
-            exit 0
-          fi
-
-          # Create JSON file to store all PR information
-          echo "[]" > connector_prs.json
-
-          while IFS='|' read -r REPO SPEC VERSION; do
-            echo "Checking repository: $REPO"
-
-            # Get the most recent auto-generated PR (look for PRs with "Auto-generated connector" in title)
-            PR_DATA=$(gh pr list \
-              --repo "$REPO" \
-              --state all \
-              --limit 10 \
-              --json number,title,url,state,createdAt \
-              --jq '[.[] | select(.title | contains("Auto-generated connector"))] | sort_by(.createdAt) | reverse | .[0]' 2>/dev/null || echo "null")
-
-            if [ -n "$PR_DATA" ] && [ "$PR_DATA" != "null" ] && [ "$PR_DATA" != "{}" ]; then
-              echo "Found auto-generated PR for $REPO"
-
-              # Extract change type from PR title if available
-              CHANGE_TYPE=$(echo "$PR_DATA" | jq -r '.title' | grep -oE '\[(MAJOR|MINOR|PATCH)\]' | head -1 || echo "[UNKNOWN]")
-              if [ -z "$CHANGE_TYPE" ]; then
-                CHANGE_TYPE="[UNKNOWN]"
-              fi
-
-              # Check for build failure in title
-              BUILD_STATUS="Success"
-              if echo "$PR_DATA" | jq -r '.title' | grep -q "BUILD FAILED"; then
-                BUILD_STATUS="FAILED"
-              fi
-
-              # Build connector info JSON
-              CONNECTOR_INFO=$(jq -n \
-                --arg repo "$REPO" \
-                --arg spec "$SPEC" \
-                --arg version "$VERSION" \
-                --arg changeType "$CHANGE_TYPE" \
-                --arg buildStatus "$BUILD_STATUS" \
-                --argjson prData "$PR_DATA" \
-                '{
-                  repository: $repo,
-                  specification: $spec,
-                  version: $version,
-                  changeType: $changeType,
-                  buildStatus: $buildStatus,
-                  pr: $prData
-                }')
-
-              # Append to connector_prs.json
-              jq --argjson item "$CONNECTOR_INFO" '. += [$item]' connector_prs.json > tmp.json && mv tmp.json connector_prs.json
-
-              echo "Added PR info for $REPO"
-            else
-              echo "No auto-generated PR found for $REPO - may still be processing"
-
-              # Add placeholder entry for connectors still processing
-              CONNECTOR_INFO=$(jq -n \
-                --arg repo "$REPO" \
-                --arg spec "$SPEC" \
-                --arg version "$VERSION" \
-                '{
-                  repository: $repo,
-                  specification: $spec,
-                  version: $version,
-                  changeType: "[PROCESSING]",
-                  buildStatus: "In Progress",
-                  pr: {number: 0, title: "Processing", url: "", state: "processing"}
-                }')
-
-              jq --argjson item "$CONNECTOR_INFO" '. += [$item]' connector_prs.json > tmp.json && mv tmp.json connector_prs.json
-            fi
-
-          done < triggered_connectors.txt
-
-          echo "PR collection complete"
-          echo "Collected information for $(cat connector_prs.json | jq 'length') connectors:"
-          cat connector_prs.json | jq '.'
-
-      - name: Generate email HTML content
-        if: env.CONNECTORS_TRIGGERED == 'true'
-        id: generate_email
-        run: |
-          # Generate HTML table rows from connector_prs.json
-          TABLE_ROWS=$(cat connector_prs.json | jq -r '.[] |
-            "<tr>" +
-            "<td>" + .repository + "</td>" +
-            "<td><code>" + .specification + "</code></td>" +
-            "<td><code>" + .version + "</code></td>" +
-            "<td><span class=\"change-" + (.changeType | gsub("[\\[\\]]"; "") | ascii_downcase) + "\">" + .changeType + "</span></td>" +
-            "<td>" + (if .buildStatus == "FAILED" then "<span class=\"status-failed\">❌ FAILED</span>" elif .buildStatus == "In Progress" then "⏳ In Progress" else "<span class=\"status-success\">✅ Success</span>" end) + "</td>" +
-            "<td>" + (if .pr.number > 0 then "<a href=\"" + .pr.url + "\">#" + (.pr.number | tostring) + "</a>" else "Pending" end) + "</td>" +
-            "</tr>"
-          ')
-
-          echo "$TABLE_ROWS" > email_table_rows.html
-          echo "Generated HTML table rows:"
-          cat email_table_rows.html
-
-          CURRENT_DATE=$(date +%Y-%m-%d)
-          CURRENT_DATETIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
-          TOTAL_CONNECTORS=$(cat connector_prs.json | jq 'length')
-
-          echo "email_subject=Daily Connector Updates Summary - ${CURRENT_DATE}" >> $GITHUB_OUTPUT
-          echo "email_date=${CURRENT_DATETIME}" >> $GITHUB_OUTPUT
-          echo "total_connectors=${TOTAL_CONNECTORS}" >> $GITHUB_OUTPUT
-
-          # Generate complete HTML email using heredoc with variable expansion
-          cat > email_body.html <<EOF
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <style>
-              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #24292e; max-width: 1200px; margin: 0 auto; padding: 20px; }
-              .header { border-bottom: 3px solid #0366d6; padding-bottom: 20px; margin-bottom: 30px; }
-              .header h1 { margin: 0; color: #0366d6; font-size: 24px; }
-              .header .date { color: #586069; font-size: 14px; margin-top: 5px; }
-              table { width: 100%; border-collapse: collapse; margin: 20px 0; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-              th { background: #f6f8fa; border: 1px solid #d1d5da; padding: 12px; text-align: left; font-weight: 600; color: #24292e; font-size: 14px; }
-              td { border: 1px solid #d1d5da; padding: 12px; font-size: 13px; }
-              tr:hover { background: #f6f8fa; }
-              .status-success { color: #28a745; font-weight: 600; }
-              .status-failed { color: #d73a49; font-weight: 600; }
-              .change-major { background: #d73a49; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; }
-              .change-minor { background: #0366d6; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; }
-              .change-patch { background: #28a745; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; }
-              .change-processing, .change-unknown { background: #6c757d; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; }
-              a { color: #0366d6; text-decoration: none; }
-              a:hover { text-decoration: underline; }
-              .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #d1d5da; color: #586069; font-size: 12px; }
-              .summary-box { background: #f6f8fa; border: 1px solid #d1d5da; border-radius: 6px; padding: 15px; margin: 20px 0; }
-              .summary-box h3 { margin: 0 0 10px 0; font-size: 16px; }
-            </style>
-          </head>
-          <body>
-            <div class="header">
-              <h1>📦 Daily Connector Updates Summary</h1>
-              <div class="date">Generated: ${CURRENT_DATETIME}</div>
-            </div>
-            <div class="summary-box">
-              <h3>Summary</h3>
-              <p>Total connectors updated: <strong>${TOTAL_CONNECTORS}</strong></p>
-            </div>
-            <table>
-              <thead>
-                <tr>
-                  <th>Connector Repository</th>
-                  <th>Specification</th>
-                  <th>Version</th>
-                  <th>Change Type</th>
-                  <th>Build Status</th>
-                  <th>Pull Request</th>
-                </tr>
-              </thead>
-              <tbody>
-          ${TABLE_ROWS}
-              </tbody>
-            </table>
-            <div class="footer">
-              <p>This is an automated message from the OpenAPI Dependabot system.</p>
-              <p>For questions or issues, please contact the Ballerina team.</p>
-            </div>
-          </body>
-          </html>
-          EOF
-
-          echo "Generated complete email body"
-          cat email_body.html
-
-      - name: Check email secrets
-        if: env.CONNECTORS_TRIGGERED == 'true'
-        id: check_email_secrets
-        run: |
-          if [ -z "${{ secrets.GMAIL_USERNAME }}" ] || [ -z "${{ secrets.GMAIL_APP_PASSWORD }}" ]; then
-            echo "WARNING: Email secrets (GMAIL_USERNAME or GMAIL_APP_PASSWORD) are not configured"
-            echo "Please add these secrets to the repository to enable email notifications"
-            echo "email_configured=false" >> $GITHUB_OUTPUT
-          else
-            echo "Email secrets are configured"
-            echo "email_configured=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Send consolidated daily email
-        if: env.CONNECTORS_TRIGGERED == 'true' && steps.check_email_secrets.outputs.email_configured == 'true'
-        continue-on-error: true
-        id: send_email
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          secure: true
-          username: ${{ secrets.GMAIL_USERNAME }}
-          password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          subject: ${{ steps.generate_email.outputs.email_subject }}
-          to: t37714687@gmail.com
-          from: ${{ secrets.GMAIL_USERNAME }}
-          html_body: file://email_body.html
-
-      - name: Log email status
-        if: env.CONNECTORS_TRIGGERED == 'true'
-        run: |
-          if [ "${{ steps.send_email.outcome }}" == "success" ]; then
-            echo "Email sent successfully to t37714687@gmail.com"
-          else
-            echo "WARNING: Email sending failed. Check GMAIL_USERNAME and GMAIL_APP_PASSWORD secrets."
-            echo "Email subject would have been: ${{ steps.generate_email.outputs.email_subject }}"
-            echo "Connector data is still available in connector_prs.json artifact"
-          fi
-
-      - name: Upload connector PR data as artifact
-        if: env.CONNECTORS_TRIGGERED == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: connector-prs-summary
-          path: |
-            connector_prs.json
-            triggered_connectors.txt
-            email_table_rows.html
-            email_body.html
+          echo "Successfully triggered ballerina-library orchestration workflow"
+          echo "The ballerina-library workflow will now handle:"
+          echo "  1. Triggering all connector regenerations"
+          echo "  2. Monitoring connector completion"
+          echo "  3. Collecting PR data"
+          echo "  4. Sending consolidated email"
 
       - name: Notify on failure
         if: failure() && env.UPDATES_FOUND == 'true'
         run: |
           if [ -n "$PR_NUMBER" ]; then
-            gh pr comment "$PR_NUMBER" --body "WARNING: Connector regeneration workflow encountered an error. Please check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
+            gh pr comment "$PR_NUMBER" --body "⚠️ WARNING: OpenAPI Dependabot workflow encountered an error. Please check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
           fi
