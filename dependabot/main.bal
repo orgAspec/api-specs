@@ -43,7 +43,7 @@ type Resolution record {|
 // Spec metadata entry record type
 type SpecEntry record {|
     string identifier;
-    string lastVersion;
+    string lastSnapshot;
     string specPath;
     string documentationUrl;
     string? branch = ();
@@ -61,8 +61,8 @@ type SpecMetadataConfig record {|
 type UpdateResult record {|
     string identifier;
     SpecEntry spec;
-    string oldVersion;
-    string newVersion;
+    string oldSnapshot;
+    string newSnapshot;
     string apiVersion;
     string downloadUrl;
     string localPath;
@@ -87,8 +87,8 @@ type BashScriptResult record {
 };
 
 // Check for version updates
-function hasVersionChanged(string oldVersion, string newVersion) returns boolean {
-    return oldVersion != newVersion;
+function hasVersionChanged(string oldSnapshot, string newSnapshot) returns boolean {
+    return oldSnapshot != newSnapshot;
 }
 
 // Check for content updates
@@ -483,14 +483,14 @@ function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, strin
     }
 
     // Check for changes
-    boolean versionChanged = hasVersionChanged(spec.lastVersion, tagName);
+    boolean versionChanged = hasVersionChanged(spec.lastSnapshot, tagName);
     string contentHash = calculateHash(specContent);
     boolean contentChanged = hasContentChanged(spec.lastContentHash, contentHash);
 
     print(string `Content Hash: ${contentHash.substring(0, 16)}...`, "Info", 1);
 
     if !versionChanged && !contentChanged {
-        print(string `No updates (version: ${spec.lastVersion}, content unchanged)`, "Info", 1);
+        print(string `No updates (snapshot: ${spec.lastSnapshot}, content unchanged)`, "Info", 1);
         return ();
     }
 
@@ -548,8 +548,8 @@ function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, strin
         return saveResult;
     }
 
-    string oldVersion = spec.lastVersion;
-    spec.lastVersion = tagName;
+    string oldSnapshot = spec.lastSnapshot;
+    spec.lastSnapshot = tagName;
     spec.lastContentHash = contentHash;
 
     string folderPath = "openapi/" + directoryPath + "/" + apiVersion;
@@ -557,8 +557,8 @@ function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, strin
     return {
         identifier: spec.identifier,
         spec: spec,
-        oldVersion: oldVersion,
-        newVersion: tagName,
+        oldSnapshot: oldSnapshot,
+        newSnapshot: tagName,
         apiVersion: apiVersion,
         downloadUrl: string `https://github.com/${owner}/${repo}/releases/tag/${tagName}`,
         localPath: localPath,
@@ -655,19 +655,19 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
 
     string apiVersion = scriptResult.apiVersion;
 
-    // Use commit date as version tracking for file-based strategy
-    string newVersion = scriptResult.lastCommitDate;
+    // Use commit date as snapshot tracking for file-based strategy
+    string newSnapshot = scriptResult.lastCommitDate;
 
-    boolean versionChanged = hasVersionChanged(spec.lastVersion, newVersion);
+    boolean snapshotChanged = hasVersionChanged(spec.lastSnapshot, newSnapshot);
 
-    // CHANGE 1: For file-based strategy, only update if BOTH commit date AND content hash changed
-    if !versionChanged || !contentChanged {
-        print(string `No updates - need both commit date and content to change (commit date changed: ${versionChanged}, content changed: ${contentChanged})`, "Info", 1);
+    // For file-based strategy, only update if BOTH commit date AND content hash changed
+    if !snapshotChanged || !contentChanged {
+        print(string `No updates - need both commit date and content to change (commit date changed: ${snapshotChanged}, content changed: ${contentChanged})`, "Info", 1);
         return ();
     }
 
     string updateType = "both";
-    print(string `UPDATE DETECTED! (${spec.lastVersion} -> ${newVersion}, Type: ${updateType})`, "Info", 1);
+    print(string `UPDATE DETECTED! (${spec.lastSnapshot} -> ${newSnapshot}, Type: ${updateType})`, "Info", 1);
 
     // Convert identifier from dot notation to directory path
     // Example: "hubspot.crm.associations" -> "hubspot/crm.associations"
@@ -709,8 +709,8 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
         return saveResult;
     }
 
-    string oldVersion = spec.lastVersion;
-    spec.lastVersion = newVersion;
+    string oldSnapshot = spec.lastSnapshot;
+    spec.lastSnapshot = newSnapshot;
     spec.lastContentHash = contentHash;
 
     string folderPath = "openapi/" + directoryPath + "/" + apiVersion;
@@ -718,8 +718,8 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
     return {
         identifier: spec.identifier,
         spec: spec,
-        oldVersion: oldVersion,
-        newVersion: newVersion,
+        oldSnapshot: oldSnapshot,
+        newSnapshot: newSnapshot,
         apiVersion: apiVersion,
         downloadUrl: string `https://github.com/${owner}/${repo}/blob/${actualBranch}/${scriptResult.filePath}`,
         localPath: localPath,
@@ -808,7 +808,7 @@ public function main() returns error? {
 
         string[] updateSummary = [];
         foreach UpdateResult update in updates {
-            // FIXED: Split identifier into vendor/api parts
+            // Split identifier into vendor/api parts
             // identifier format is "vendor.api" (e.g., "hubspot.crm.associations")
             // We need to convert it to "vendor/api:version" format
             string[] identifierParts = regexp:split(re `\.`, update.identifier);
@@ -824,7 +824,7 @@ public function main() returns error? {
                 summaryLine = string `${update.identifier}:${update.apiVersion}`;
             }
 
-            print(string `${update.identifier}: ${update.oldVersion} -> ${update.newVersion} (${update.updateType} update)`, "Info", 1);
+            print(string `${update.identifier}: ${update.oldSnapshot} -> ${update.newSnapshot} (${update.updateType} update)`, "Info", 1);
             updateSummary.push(summaryLine);
         }
 
@@ -835,7 +835,7 @@ public function main() returns error? {
             return writeResult;
         }
         io:println("");
-        print("Updated repos.json with new versions and content hashes", "Info", 0);
+        print("Updated repos.json with new snapshots and content hashes", "Info", 0);
 
         // Write update summary
         string summaryContent = string:'join("\n", ...updateSummary);
