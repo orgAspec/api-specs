@@ -2,7 +2,7 @@
     "specMetadata": [
         {
             "identifier": "twilio.twilio",
-            "lastVersion": "2.6.1",
+            "lastSnapshot": "2.6.1",
             "specPath": "^twilio_api_v[0-9]+\\.(yaml|json)$",
             "documentationUrl": "https://www.twilio.com/docs",
             "connectorRepo": "orgBBalLib/module-ballerinax-twilio",
