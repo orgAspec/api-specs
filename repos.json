@@ -1,16 +1,15 @@
 {
     "specMetadata": [
         {
-            "identifier": "hubspot.crm.associations",
-            "lastSnapshot": "50914",
-            "specPath": "^associations\\.(yaml|json)$",
-            "documentationUrl": "https://developers.hubspot.com/docs/api/crm/associations",
-            "branch": "main",
-            "connectorRepo": "orgBBalLib/module-ballerinax-hubspot.crm.associations",
-            "lastContentHash": "e0fcb230c90ffc45b7ff89aefebe700f922a114e56d24400b3726bf1c3fa6092",
+            "identifier": "twilio.twilio",
+            "lastVersion": "2.6.1",
+            "specPath": "^twilio_api_v[0-9]+\\.(yaml|json)$",
+            "documentationUrl": "https://www.twilio.com/docs",
+            "connectorRepo": "orgBBalLib/module-ballerinax-twilio",
+            "lastContentHash": "f68b5f64dcb70a2105e0d1245a0288f2e01f675f67024c88fe1ddf38288701e0",
             "resolution": {
-                "parentDirectory": "https://github.com/HubSpot/HubSpot-public-api-spec-collection/tree/main/PublicApiSpecs/CRM/Associations/Rollouts",
-                "strategy": "file-based"
+                "parentDirectory": "https://github.com/twilio/twilio-oai/tree/main/spec/yaml",
+                "strategy": "release-tag-based"
             }
         }
     ]
