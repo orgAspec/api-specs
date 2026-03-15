@@ -1,1 +1,16 @@
-{"specMetadata":[{"identifier":"twilio.twilio", "lastSnapshot":"2.6.5", "specPath":"^twilio_api_v[0-9]+\\.(yaml|json)$", "documentationUrl":"https://www.twilio.com/docs", "branch":null, "connectorRepo":"orgBBalLib/module-ballerinax-twilio", "lastContentHash":"537f0a9167d8c499d53cbdfa32fb0daadeb3ca21f37f00ea345a151b13aedadd", "resolution":{"parentDirectory":"https://github.com/twilio/twilio-oai/tree/main/spec/yaml", "strategy":"release-tag-based"}}]}
+{
+    "specMetadata": [
+        {
+            "identifier": "twilio.twilio",
+            "lastSnapshot": "2.6.1",
+            "specPath": "^twilio_api_v[0-9]+\\.(yaml|json)$",
+            "documentationUrl": "https://www.twilio.com/docs",
+            "connectorRepo": "orgBBalLib/module-ballerinax-twilio",
+            "lastContentHash": "f68b5f64dcb70a2105e0d1245a0288f2e01f675f67024c88fe1ddf38288701e0",
+            "resolution": {
+                "parentDirectory": "https://github.com/twilio/twilio-oai/tree/main/spec/yaml",
+                "strategy": "release-tag-based"
+            }
+        }
+    ]
+}
