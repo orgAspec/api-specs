@@ -1,17 +1,19 @@
 {
-    "specMetadata": [
-        {
-            "identifier": "hubspot.crm.associations",
-            "lastSnapshot": "50914",
-            "specPath": "^associations\\.(yaml|json)$",
-            "documentationUrl": "https://developers.hubspot.com/docs/api/crm/associations",
-            "branch": "main",
-            "connectorRepo": "orgBBalLib/module-ballerinax-hubspot.crm.associations",
-            "lastContentHash": "e0fcb230c90ffc45b7ff89aefebe700f922a114e56d24400b3726bf1c3fa6092",
-            "resolution": {
-                "parentDirectory": "https://github.com/HubSpot/HubSpot-public-api-spec-collection/tree/main/PublicApiSpecs/CRM/Associations/Rollouts",
-                "strategy": "file-based"
-            }
-        }
-    ]
+  "specMetadata": [
+    {
+      "identifier": "hubspot.crm.associations",
+      "lastSnapshot": "50914",
+      "specPath": "^associations\\.(yaml|json)$",
+      "documentationUrl": "https://developers.hubspot.com/docs/api/crm/associations",
+      "branch": "main",
+      "connectorRepo": "orgBBalLib/module-ballerinax-hubspot.crm.associations",
+      "lastContentHash": "e0fcb230c90ffc45b7ff89aefebe700f922a114e56d24400b3726bf1c3fa6092",
+      "frequency": "monthly",
+      "lastChecked": "",
+      "resolution": {
+        "parentDirectory": "https://github.com/HubSpot/HubSpot-public-api-spec-collection/tree/main/PublicApiSpecs/CRM/Associations/Rollouts",
+        "strategy": "file-based"
+      }
+    }
+  ]
 }

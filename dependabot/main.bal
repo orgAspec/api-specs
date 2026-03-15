@@ -23,6 +23,7 @@ import ballerina/http;
 import ballerina/io;
 import ballerina/lang.regexp;
 import ballerina/os;
+import ballerina/time;
 
 // Logging utility function for structured output
 isolated function print(string message, string level, int indentation) {
@@ -33,6 +34,12 @@ isolated function print(string message, string level, int indentation) {
 // Versioning strategy types
 const RELEASE_TAG_BASED = "release-tag-based";
 const FILE_BASED = "file-based";
+
+// Supported check frequencies
+const FREQ_DAILY = "daily";
+const FREQ_WEEKLY = "weekly";
+const FREQ_MONTHLY = "monthly";
+const FREQ_QUARTERLY = "quarterly";
 
 // Resolution record type
 type Resolution record {|
@@ -49,6 +56,15 @@ type SpecEntry record {|
     string? branch = ();
     string? connectorRepo = ();
     string? lastContentHash = ();
+    // How often this spec should be checked.
+    // Accepted values: "daily" | "weekly" | "monthly" | "quarterly"
+    // Defaults to "daily" when the field is absent or empty.
+    string frequency = FREQ_DAILY;
+    // ISO-8601 date string (YYYY-MM-DD) of the last time this spec was
+    // checked (regardless of whether an update was found).
+    // An empty string means the spec has never been checked, so it is
+    // always considered due.
+    string lastChecked = "";
     Resolution resolution;
 |};
 
@@ -86,6 +102,112 @@ type BashScriptResult record {
     string lastCommitDate;
 };
 
+// ---------------------------------------------------------------------------
+// Frequency / scheduling helpers
+// ---------------------------------------------------------------------------
+
+// Return the minimum number of days that must have elapsed since lastChecked
+// before the spec is considered due for another check.
+function frequencyToDays(string frequency) returns int {
+    match frequency {
+        FREQ_DAILY => { return 1; }
+        FREQ_WEEKLY => { return 7; }
+        FREQ_MONTHLY => { return 30; }
+        FREQ_QUARTERLY => { return 90; }
+        _ => {
+            print(string `Unknown frequency '${frequency}', defaulting to daily`, "Warn", 1);
+            return 1;
+        }
+    }
+}
+
+// Return today's date as a YYYY-MM-DD string using UTC civil time.
+function todayString() returns string {
+    time:Utc now = time:utcNow();
+    time:Civil civil = time:utcToCivil(now);
+    string month = civil.month < 10 ? string `0${civil.month}` : civil.month.toString();
+    string day   = civil.day   < 10 ? string `0${civil.day}`   : civil.day.toString();
+    return string `${civil.year}-${month}-${day}`;
+}
+
+// Parse a YYYY-MM-DD string into a time:Civil value.
+// Returns an error for blank or malformed strings.
+function parseDateString(string dateStr) returns time:Civil|error {
+    if dateStr.trim() == "" {
+        return error("empty date string");
+    }
+    string[] parts = regexp:split(re `-`, dateStr.trim());
+    if parts.length() != 3 {
+        return error(string `Invalid date format: ${dateStr}`);
+    }
+    int|error year  = int:fromString(parts[0]);
+    int|error month = int:fromString(parts[1]);
+    int|error day   = int:fromString(parts[2]);
+    if year is error || month is error || day is error {
+        return error(string `Non-numeric date components in: ${dateStr}`);
+    }
+    return {
+        year:  year,
+        month: month,
+        day:   day,
+        hour:  0,
+        minute: 0,
+        second: 0
+    };
+}
+
+// Convert a time:Civil (date-only) value to a Unix-epoch day count.
+// Accurate for dates in the range 1970-01-01 … 2099-12-31.
+function civilToEpochDays(time:Civil civil) returns int {
+    // Use Ballerina's time module to get a UTC epoch (seconds) for midnight on
+    // this date, then convert to days.
+    time:Civil midnight = {
+        year:   civil.year,
+        month:  civil.month,
+        day:    civil.day,
+        hour:   0,
+        minute: 0,
+        second: 0
+    };
+    time:Utc|error utc = time:utcFromCivil(midnight);
+    if utc is error {
+        return 0;
+    }
+    // utc[0] is the seconds component of the epoch tuple
+    return (utc[0] / 86400).abs();
+}
+
+// Decide whether a spec is due for a check.
+//
+// A spec is due when:
+//   • lastChecked is blank (never been checked), OR
+//   • the number of whole days since lastChecked >= frequencyToDays(frequency)
+function isDue(string lastChecked, string frequency) returns boolean {
+    time:Civil|error lastDate = parseDateString(lastChecked);
+    if lastDate is error {
+        // Never been checked — always due.
+        return true;
+    }
+
+    string todayStr = todayString();
+    time:Civil|error todayCivil = parseDateString(todayStr);
+    if todayCivil is error {
+        // Should never happen; default to due so we don't silently skip.
+        return true;
+    }
+
+    int lastDays  = civilToEpochDays(lastDate);
+    int todayDays = civilToEpochDays(todayCivil);
+    int elapsed   = todayDays - lastDays;
+    int threshold = frequencyToDays(frequency);
+
+    return elapsed >= threshold;
+}
+
+// ---------------------------------------------------------------------------
+// Existing helpers (unchanged)
+// ---------------------------------------------------------------------------
+
 // Check for version updates
 function hasVersionChanged(string oldSnapshot, string newSnapshot) returns boolean {
     return oldSnapshot != newSnapshot;
@@ -108,9 +230,6 @@ function calculateHash(string content) returns string {
 
 // Parse GitHub URL to extract owner, repo, branch, and path
 function parseGitHubUrl(string url) returns [string, string, string, string]|error {
-    // Format: https://github.com/owner/repo/tree/branch/path
-    // or: https://github.com/owner/repo (root of default branch)
-
     string cleanUrl = url;
     if cleanUrl.startsWith("https://github.com/") {
         cleanUrl = cleanUrl.substring(19);
@@ -344,7 +463,6 @@ function listGitHubDirectoryRecursive(string owner, string repo, string branch, 
                     if itemType == "file" {
                         allFiles.push(itemPath);
                     } else if itemType == "dir" {
-                        // Recurse into subdirectory
                         string[]|error subFiles = listGitHubDirectoryRecursive(owner, repo, branch, itemPath, token);
                         if subFiles is string[] {
                             foreach string subFile in subFiles {
@@ -361,8 +479,6 @@ function listGitHubDirectoryRecursive(string owner, string repo, string branch, 
     return error("Unexpected response format from GitHub API");
 }
 
-
-
 // Find the best matching file - prefer YAML over JSON when multiple matches
 function findBestMatchingFile(string[] files, string specPathRegex) returns string|error {
     print(string `Finding best match for regex: ${specPathRegex}`, "Info", 2);
@@ -370,26 +486,21 @@ function findBestMatchingFile(string[] files, string specPathRegex) returns stri
 
     string? bestFile = ();
 
-    // Compile regex pattern
     regexp:RegExp pattern = check regexp:fromString(specPathRegex);
 
     foreach string filePath in files {
-        // Get just the filename
         string[] pathParts = regexp:split(re `/`, filePath);
         string fileName = pathParts[pathParts.length() - 1];
 
-        // Skip "Collection" files - these are Postman collections, not OpenAPI specs
         if fileName.includes("Collection") {
             continue;
         }
 
-        // Check if filename matches pattern
         boolean matches = pattern.isFullMatch(fileName);
 
         if matches {
             print(string `Match: ${filePath}`, "Info", 3);
 
-            // If no best file yet, or prefer YAML over JSON
             if bestFile is () {
                 bestFile = filePath;
             } else {
@@ -398,7 +509,6 @@ function findBestMatchingFile(string[] files, string specPathRegex) returns stri
                 string bestFileName = bestPathParts[bestPathParts.length() - 1];
                 boolean bestIsYaml = bestFileName.endsWith(".yaml") || bestFileName.endsWith(".yml");
 
-                // Prefer YAML over JSON
                 if currentIsYaml && !bestIsYaml {
                     bestFile = filePath;
                 }
@@ -414,11 +524,14 @@ function findBestMatchingFile(string[] files, string specPathRegex) returns stri
     return error("No matching files found");
 }
 
+// ---------------------------------------------------------------------------
+// Strategy processors (unchanged logic, just receive the already-resolved spec)
+// ---------------------------------------------------------------------------
+
 // Process repository with release-tag based strategy
 function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, string token) returns UpdateResult|error? {
     print(string `Checking: ${spec.identifier} [Release-Tag Strategy]`, "Info", 0);
 
-    // Parse the parent directory URL
     [string, string, string, string]|error urlParts = parseGitHubUrl(spec.resolution.parentDirectory);
     if urlParts is error {
         print(string `Failed to parse URL: ${urlParts.message()}`, "Error", 1);
@@ -427,7 +540,6 @@ function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, strin
 
     var [owner, repo, _, basePath] = urlParts;
 
-    // Get latest release
     github:Release|error latestRelease = githubClient->/repos/[owner]/[repo]/releases/latest();
 
     if latestRelease is error {
@@ -455,17 +567,14 @@ function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, strin
         print(string `Published: ${publishedAt}`, "Info", 1);
     }
 
-    // For release-tag strategy, list files in the directory and find the best match using specPath regex
     print(string `Listing files in ${basePath} to find spec matching pattern: ${spec.specPath}`, "Info", 1);
 
-    // List files using release tag as branch
     string[]|error allFiles = listGitHubDirectoryRecursive(owner, repo, tagName, basePath, token);
     if allFiles is error {
         print(string `Failed to list files: ${allFiles.message()}`, "Error", 1);
         return allFiles;
     }
 
-    // Find best matching file using the specPath regex
     string|error bestFileResult = findBestMatchingFile(allFiles, spec.specPath);
     if bestFileResult is error {
         print(string `No matching spec file found: ${bestFileResult.message()}`, "Error", 1);
@@ -475,14 +584,12 @@ function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, strin
     string specFilePath = bestFileResult;
     print(string `Selected spec file: ${specFilePath}`, "Info", 1);
 
-    // Download the spec
     string|error specContent = downloadRawFile(owner, repo, tagName, specFilePath);
     if specContent is error {
         print("Download failed: " + specContent.message(), "Error", 1);
         return specContent;
     }
 
-    // Check for changes
     boolean versionChanged = hasVersionChanged(spec.lastSnapshot, tagName);
     string contentHash = calculateHash(specContent);
     boolean contentChanged = hasContentChanged(spec.lastContentHash, contentHash);
@@ -497,15 +604,12 @@ function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, strin
     string updateType = versionChanged && contentChanged ? "both" : (versionChanged ? "version" : "content");
     print(string `UPDATE DETECTED! (Type: ${updateType})`, "Info", 1);
 
-    // Extract API version
     string|error apiVersionResult = extractApiVersion(specContent);
     string apiVersion = apiVersionResult is string ? apiVersionResult :
         (tagName.startsWith("v") ? tagName.substring(1) : tagName);
 
     print(string `API Version: ${apiVersion}`, "Info", 1);
 
-    // Convert identifier from dot notation to directory path
-    // Example: "hubspot.crm.associations" -> "hubspot/crm.associations"
     string[] identifierParts = regexp:split(re `\.`, spec.identifier);
     string directoryPath = "";
     if identifierParts.length() >= 2 {
@@ -518,7 +622,6 @@ function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, strin
 
     string versionDir = "../openapi/" + directoryPath + "/" + apiVersion;
 
-    // For release-tag strategy: only update if BOTH version AND content hash changed
     if !versionChanged || !contentChanged {
         print(string `Skipping update - need both version and content to change (version changed: ${versionChanged}, content changed: ${contentChanged})`, "Info", 1);
         return ();
@@ -527,7 +630,6 @@ function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, strin
     string fileExtension = getFileExtension(specContent);
     string localPath = versionDir + "/openapi." + fileExtension;
 
-    // Remove existing spec files if any (to replace with latest)
     if check file:test(versionDir, file:EXISTS) {
         string jsonPath = versionDir + "/openapi.json";
         string yamlPath = versionDir + "/openapi.yaml";
@@ -572,7 +674,6 @@ function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, strin
 function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult|error? {
     print(string `Checking: ${spec.identifier} [File-Based Strategy]`, "Info", 0);
 
-    // Parse the parent directory URL
     [string, string, string, string]|error urlParts = parseGitHubUrl(spec.resolution.parentDirectory);
     if urlParts is error {
         print(string `Failed to parse URL: ${urlParts.message()}`, "Error", 1);
@@ -581,7 +682,6 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
 
     var [owner, repo, branch, basePath] = urlParts;
 
-    // Use branch from spec if provided, otherwise use parsed branch
     string actualBranch = spec.branch is string ? <string>spec.branch : branch;
 
     print(string `Repository: ${owner}/${repo}`, "Info", 1);
@@ -589,10 +689,8 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
     print(string `Base path: ${basePath}`, "Info", 1);
     print(string `Spec pattern: ${spec.specPath}`, "Info", 1);
 
-    // Construct repository URL
     string repoUrl = string `https://github.com/${owner}/${repo}.git`;
 
-    // Call bash script to find the latest spec file
     print("Running bash script to clone and find latest spec...", "Info", 1);
 
     string scriptPath = "./find_latest_spec.sh";
@@ -608,7 +706,6 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
 
     os:Process process = result;
 
-    // Wait for process to complete and get exit code
     int exitCode = check process.waitForExit();
 
     if exitCode != 0 {
@@ -616,7 +713,6 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
         return error(string `Bash script exited with code ${exitCode}`);
     }
 
-    // Read stdout (JSON result)
     byte[]|error outputBytes = process.output();
     if outputBytes is error {
         print(string `Failed to get output: ${outputBytes.message()}`, "Error", 1);
@@ -626,7 +722,6 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
     string output = check string:fromBytes(outputBytes);
     print(string `Bash script output: ${output}`, "Info", 2);
 
-    // Parse JSON result
     json|error jsonResult = jsondata:parseString(output);
     if jsonResult is error {
         print(string `Failed to parse bash script output: ${jsonResult.message()}`, "Error", 1);
@@ -639,7 +734,6 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
     print(string `API Version: ${scriptResult.apiVersion}`, "Info", 1);
     print(string `Last commit date: ${scriptResult.lastCommitDate}`, "Info", 1);
 
-    // Download the spec file
     string|error specContent = downloadRawFile(owner, repo, actualBranch, scriptResult.filePath);
 
     if specContent is error {
@@ -647,7 +741,6 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
         return specContent;
     }
 
-    // Calculate content hash
     string contentHash = calculateHash(specContent);
     boolean contentChanged = hasContentChanged(spec.lastContentHash, contentHash);
 
@@ -655,12 +748,10 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
 
     string apiVersion = scriptResult.apiVersion;
 
-    // Use commit date as snapshot tracking for file-based strategy
     string newSnapshot = scriptResult.lastCommitDate;
 
     boolean snapshotChanged = hasVersionChanged(spec.lastSnapshot, newSnapshot);
 
-    // For file-based strategy, only update if BOTH commit date AND content hash changed
     if !snapshotChanged || !contentChanged {
         print(string `No updates - need both commit date and content to change (commit date changed: ${snapshotChanged}, content changed: ${contentChanged})`, "Info", 1);
         return ();
@@ -669,8 +760,6 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
     string updateType = "both";
     print(string `UPDATE DETECTED! (${spec.lastSnapshot} -> ${newSnapshot}, Type: ${updateType})`, "Info", 1);
 
-    // Convert identifier from dot notation to directory path
-    // Example: "hubspot.crm.associations" -> "hubspot/crm.associations"
     string[] identifierParts = regexp:split(re `\.`, spec.identifier);
     string directoryPath = "";
     if identifierParts.length() >= 2 {
@@ -681,14 +770,11 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
         directoryPath = spec.identifier;
     }
 
-    // Structure: openapi/{vendor}/{api}/{apiVersion}/
     string versionDir = "../openapi/" + directoryPath + "/" + apiVersion;
 
-    // For file-based, we always update to latest (remove old if exists)
     string fileExtension = getFileExtension(specContent);
     string localPath = versionDir + "/openapi." + fileExtension;
 
-    // Remove existing spec files if any (to replace with latest rollout)
     if check file:test(versionDir, file:EXISTS) {
         string jsonPath = versionDir + "/openapi.json";
         string yamlPath = versionDir + "/openapi.yaml";
@@ -737,10 +823,16 @@ function writeReposJson(SpecMetadataConfig config) returns error? {
     return;
 }
 
-// Main monitoring function
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
 public function main() returns error? {
     print("=== Dependabot OpenAPI Monitor ===", "Info", 0);
     print("Starting OpenAPI specification monitoring...", "Info", 0);
+
+    string today = todayString();
+    print(string `Today: ${today}`, "Info", 0);
 
     // Get GitHub token
     string? ghToken = os:getEnv("GH_TOKEN");
@@ -778,9 +870,33 @@ public function main() returns error? {
     // Track updates
     UpdateResult[] updates = [];
 
-    // Check each specification based on strategy
+    // Check each specification based on frequency, then strategy
     foreach int i in 0 ..< config.specMetadata.length() {
         SpecEntry spec = config.specMetadata[i];
+
+        // -----------------------------------------------------------------
+        // Frequency gate: skip this spec if it is not due yet
+        // -----------------------------------------------------------------
+        string effectiveFrequency = spec.frequency == "" ? FREQ_DAILY : spec.frequency;
+        boolean due = isDue(spec.lastChecked, effectiveFrequency);
+
+        if !due {
+            print(
+                string `Skipping ${spec.identifier} (frequency: ${effectiveFrequency}, last checked: ${spec.lastChecked})`,
+                "Info", 0
+            );
+            io:println("");
+            continue;
+        }
+
+        print(
+            string `Due for check — ${spec.identifier} (frequency: ${effectiveFrequency}, last checked: ${spec.lastChecked == "" ? "never" : spec.lastChecked})`,
+            "Info", 0
+        );
+
+        // -----------------------------------------------------------------
+        // Process the spec using its configured strategy
+        // -----------------------------------------------------------------
         UpdateResult|error? result = ();
 
         if spec.resolution.strategy == RELEASE_TAG_BASED {
@@ -791,10 +907,20 @@ public function main() returns error? {
             print(string `Unknown strategy: ${spec.resolution.strategy}`, "Warn", 0);
         }
 
+        // -----------------------------------------------------------------
+        // Always update lastChecked (whether or not an update was found)
+        // -----------------------------------------------------------------
+        spec.lastChecked = today;
+
         if result is UpdateResult {
             updates.push(result);
-            // Update the spec in config array
+            // Propagate all mutations (lastSnapshot, lastContentHash, lastChecked)
+            // back into the config array so they are persisted to repos.json.
+            result.spec.lastChecked = today;
             config.specMetadata[i] = result.spec;
+        } else {
+            // No update found, but we still need to save the new lastChecked.
+            config.specMetadata[i] = spec;
         }
 
         io:println("");
@@ -808,19 +934,14 @@ public function main() returns error? {
 
         string[] updateSummary = [];
         foreach UpdateResult update in updates {
-            // Split identifier into vendor/api parts
-            // identifier format is "vendor.api" (e.g., "hubspot.crm.associations")
-            // We need to convert it to "vendor/api:version" format
             string[] identifierParts = regexp:split(re `\.`, update.identifier);
 
             string summaryLine = "";
             if identifierParts.length() >= 2 {
-                // Format: vendor/api:version (e.g., hubspot/crm.associations:v4)
                 string vendor = identifierParts[0];
                 string api = string:'join(".", ...identifierParts.slice(1));
                 summaryLine = string `${vendor}/${api}:${update.apiVersion}`;
             } else {
-                // Fallback to original format if parsing fails
                 summaryLine = string `${update.identifier}:${update.apiVersion}`;
             }
 
@@ -828,14 +949,14 @@ public function main() returns error? {
             updateSummary.push(summaryLine);
         }
 
-        // Update repos.json
+        // Update repos.json (includes lastChecked for all processed specs)
         error? writeResult = writeReposJson(config);
         if writeResult is error {
             print("Failed to write repos.json: " + writeResult.message(), "Error", 0);
             return writeResult;
         }
         io:println("");
-        print("Updated repos.json with new snapshots and content hashes", "Info", 0);
+        print("Updated repos.json with new snapshots, content hashes, and lastChecked dates", "Info", 0);
 
         // Write update summary
         string summaryContent = string:'join("\n", ...updateSummary);
@@ -845,6 +966,13 @@ public function main() returns error? {
         print("Changes detected and saved. The workflow will create a PR automatically.", "Info", 0);
 
     } else {
-        print("All specifications are up-to-date!", "Info", 0);
+        // Even when no updates are found we still persist the lastChecked
+        // updates so that the frequency gate advances correctly next run.
+        error? writeResult = writeReposJson(config);
+        if writeResult is error {
+            print("Failed to write repos.json: " + writeResult.message(), "Error", 0);
+            return writeResult;
+        }
+        print("All specifications are up-to-date! Updated lastChecked dates in repos.json.", "Info", 0);
     }
 }

@@ -54,14 +54,38 @@ jobs:
 
           cd ..
 
-      - name: Check for updates
+      # -----------------------------------------------------------------------
+      # Always commit repos.json when it changed.
+      #
+      # The Ballerina monitor updates the `lastChecked` field for every spec it
+      # processes (whether or not an actual OpenAPI update was found).  We must
+      # persist that change so the frequency gate advances correctly on the next
+      # daily run — otherwise every spec would appear "never checked" and be
+      # processed every day regardless of its configured frequency.
+      #
+      # This commit is a direct push to main (no PR needed) because it only
+      # touches repos.json metadata, not the OpenAPI specs themselves.
+      # -----------------------------------------------------------------------
+      - name: Commit lastChecked updates to repos.json
+        run: |
+          if git diff --quiet repos.json; then
+            echo "repos.json unchanged, nothing to commit"
+          else
+            echo "repos.json has lastChecked updates, committing directly to main"
+            git add repos.json
+            git commit -m "chore: update lastChecked timestamps in repos.json [skip ci]"
+            git push origin main
+            echo "repos.json committed successfully"
+          fi
+
+      - name: Check for spec updates
         run: |
           if [ -f "UPDATE_SUMMARY.txt" ]; then
             echo "UPDATES_FOUND=true" >> $GITHUB_ENV
             echo "Updates detected!"
           else
             echo "UPDATES_FOUND=false" >> $GITHUB_ENV
-            echo "No updates found"
+            echo "No spec updates found"
           fi
 
       - name: Create and Push Branch
@@ -75,7 +99,7 @@ jobs:
           echo "Git status before add:"
           git status
 
-          git add -A openapi/ repos.json UPDATE_SUMMARY.txt
+          git add -A openapi/ UPDATE_SUMMARY.txt
 
           echo "Git status after add:"
           git status

@@ -35,7 +35,10 @@ jobs:
 
           VALID=true
           for file in $CHANGED_FILES; do
-            if [[ ! "$file" =~ ^openapi/ ]] && [[ "$file" != "repos.json" ]] && [[ "$file" != "UPDATE_SUMMARY.txt" ]]; then
+            # repos.json is committed directly to main (with [skip ci]) to persist
+            # lastChecked timestamps, so it must NOT appear in spec-update PRs.
+            # Only openapi/ spec files and UPDATE_SUMMARY.txt are expected here.
+            if [[ ! "$file" =~ ^openapi/ ]] && [[ "$file" != "UPDATE_SUMMARY.txt" ]]; then
               echo "Unexpected file change: $file"
               VALID=false
             fi
