@@ -2,7 +2,7 @@
   "specMetadata": [
     {
       "identifier": "hubspot.crm.associations",
-      "lastSnapshot": "50914",
+      "VendorSpecLastUpdate": "50914",
       "specPath": "^associations\\.(yaml|json)$",
       "documentationUrl": "https://developers.hubspot.com/docs/api/crm/associations",
       "branch": "main",

@@ -50,7 +50,7 @@ type Resolution record {|
 // Spec metadata entry record type
 type SpecEntry record {|
     string identifier;
-    string lastSnapshot;
+    string VendorSpecLastUpdate;
     string specPath;
     string documentationUrl;
     string? branch = ();
@@ -525,7 +525,7 @@ function findBestMatchingFile(string[] files, string specPathRegex) returns stri
 }
 
 // ---------------------------------------------------------------------------
-// Strategy processors (unchanged logic, just receive the already-resolved spec)
+// Strategy processors
 // ---------------------------------------------------------------------------
 
 // Process repository with release-tag based strategy
@@ -590,14 +590,14 @@ function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, strin
         return specContent;
     }
 
-    boolean versionChanged = hasVersionChanged(spec.lastSnapshot, tagName);
+    boolean versionChanged = hasVersionChanged(spec.VendorSpecLastUpdate, tagName);
     string contentHash = calculateHash(specContent);
     boolean contentChanged = hasContentChanged(spec.lastContentHash, contentHash);
 
     print(string `Content Hash: ${contentHash.substring(0, 16)}...`, "Info", 1);
 
     if !versionChanged && !contentChanged {
-        print(string `No updates (snapshot: ${spec.lastSnapshot}, content unchanged)`, "Info", 1);
+        print(string `No updates (snapshot: ${spec.VendorSpecLastUpdate}, content unchanged)`, "Info", 1);
         return ();
     }
 
@@ -650,8 +650,8 @@ function processReleaseTagRepo(github:Client githubClient, SpecEntry spec, strin
         return saveResult;
     }
 
-    string oldSnapshot = spec.lastSnapshot;
-    spec.lastSnapshot = tagName;
+    string oldSnapshot = spec.VendorSpecLastUpdate;
+    spec.VendorSpecLastUpdate = tagName;
     spec.lastContentHash = contentHash;
 
     string folderPath = "openapi/" + directoryPath + "/" + apiVersion;
@@ -750,7 +750,7 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
 
     string newSnapshot = scriptResult.lastCommitDate;
 
-    boolean snapshotChanged = hasVersionChanged(spec.lastSnapshot, newSnapshot);
+    boolean snapshotChanged = hasVersionChanged(spec.VendorSpecLastUpdate, newSnapshot);
 
     if !snapshotChanged || !contentChanged {
         print(string `No updates - need both commit date and content to change (commit date changed: ${snapshotChanged}, content changed: ${contentChanged})`, "Info", 1);
@@ -758,7 +758,7 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
     }
 
     string updateType = "both";
-    print(string `UPDATE DETECTED! (${spec.lastSnapshot} -> ${newSnapshot}, Type: ${updateType})`, "Info", 1);
+    print(string `UPDATE DETECTED! (${spec.VendorSpecLastUpdate} -> ${newSnapshot}, Type: ${updateType})`, "Info", 1);
 
     string[] identifierParts = regexp:split(re `\.`, spec.identifier);
     string directoryPath = "";
@@ -795,8 +795,8 @@ function processFileBasedRepo(SpecEntry spec, string token) returns UpdateResult
         return saveResult;
     }
 
-    string oldSnapshot = spec.lastSnapshot;
-    spec.lastSnapshot = newSnapshot;
+    string oldSnapshot = spec.VendorSpecLastUpdate;
+    spec.VendorSpecLastUpdate = newSnapshot;
     spec.lastContentHash = contentHash;
 
     string folderPath = "openapi/" + directoryPath + "/" + apiVersion;
@@ -914,7 +914,7 @@ public function main() returns error? {
 
         if result is UpdateResult {
             updates.push(result);
-            // Propagate all mutations (lastSnapshot, lastContentHash, lastChecked)
+            // Propagate all mutations (VendorSpecLastUpdate, lastContentHash, lastChecked)
             // back into the config array so they are persisted to repos.json.
             result.spec.lastChecked = today;
             config.specMetadata[i] = result.spec;
